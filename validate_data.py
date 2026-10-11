@@ -13,7 +13,7 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from water_forecast.data import clean_daily_supply
+from water_forecast.data import clean_daily_supply, regularize_daily, train_clip_limits
 
 
 def parse_args():
@@ -43,14 +43,17 @@ def main() -> None:
     print(f"Rows: {len(frame)} | bad dates: {int(dates.isna().sum())} | bad numbers: {int(nums.isna().sum())} | "
           f"negatives/zero: {int((nums <= 0).sum())}")
     try:
-        cleaned = clean_daily_supply(frame, smoothing=True)
+        # Same steps as run_experiment's training inputs: regularize, clip, causal smoothing.
+        daily = regularize_daily(frame)
+        limits = train_clip_limits(daily["supply_m3"].to_numpy(), len(daily))
+        cleaned = clean_daily_supply(frame, smoothing=True, clip_limits=limits)
     except Exception as e:
         print(f"FAIL: cleaning failed: {e}")
         sys.exit(1)
     span = (pd.to_datetime(cleaned['date'].max()) - pd.to_datetime(cleaned['date'].min())).days + 1
     missing = span - len(cleaned)
     print(f"After cleaning: {len(cleaned)} daily rows from {cleaned['date'].min()} to {cleaned['date'].max()} "
-          f"({span} calendar days, {missing} interpolated).")
+          f"({span} calendar days, {missing} gap-filled).")
     print(f"Range: {cleaned['supply_m3'].min():.1f} .. {cleaned['supply_m3'].max():.1f} m3, mean {cleaned['supply_m3'].mean():.1f} m3.")
     ok = len(cleaned) >= 120
     print("PASS: ready for training." if ok else "FAIL: need at least 120 daily rows (good: 730+).")

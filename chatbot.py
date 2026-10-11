@@ -44,8 +44,8 @@ import numpy as np
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from water_forecast.data import clean_daily_supply
-from water_forecast.inference import find_latest_run, forecast_with_seq_len, load_bundle
+from water_forecast.inference import (clean_with_bundle_settings, find_latest_run, forecast_future, load_bundle,
+                                      weights_file)
 
 
 HELP = """I can answer (terminal, offline):
@@ -247,7 +247,7 @@ def load_all(args):
         raw = pd.read_csv(args.data)
         frame = raw[[args.date_column, args.target_column]].rename(
             columns={args.date_column: "date", args.target_column: "supply_m3"})
-        history = clean_daily_supply(frame, smoothing=True)
+        history = clean_with_bundle_settings(frame, meta)
     else:
         history = pd.read_csv(run_dir / "cleaned_daily_supply.csv", parse_dates=["date"])
     metrics = None
@@ -286,7 +286,7 @@ def explain_recent(history: pd.DataFrame, n: int) -> str:
 def explain_forecast(model, scaler, meta, history, days: int, metrics: pd.DataFrame | None = None) -> str:
     seq_len = int(meta.get("sequence_length", 30))
     recent = history["supply_m3"].iloc[-seq_len:]
-    fc = forecast_with_seq_len(model, scaler, recent, seq_len, days)
+    fc = forecast_future(model, scaler, recent, days, seq_len)
     last_date = pd.to_datetime(history["date"].iloc[-1])
     last_actual = float(recent.iloc[-1])
     variant = meta.get("variant", "cnn_lstm_attention")
@@ -301,11 +301,8 @@ def explain_forecast(model, scaler, meta, history, days: int, metrics: pd.DataFr
     else:
         lines.append(f"Next {days} days average: {fc.mean():,.1f} m3/day (range {fc.min():,.1f}–{fc.max():,.1f}).")
     if metrics is not None and not metrics.empty:
-        best = metrics.sort_values("rmse").iloc[0]
-        lines.append(
-            f"Hold-out test (best model {best['model']}): typical error about RMSE {best['rmse']:,.1f} m3."
-        )
-    lines.append("Say 'accuracy' for full metrics. Real days can differ from events the model never saw.")
+        lines.append(accuracy_text(metrics, meta, "m3", 1, "en"))
+    lines.append("Real days can differ from events the model never saw.")
     return "\n".join(lines)
 
 
@@ -314,19 +311,61 @@ def explain_model(meta: dict, run_dir: Path, metrics: pd.DataFrame | None) -> st
     seq = int(meta.get("sequence_length", 30))
     lines = [
         "Offline pipeline (no cloud AI in this chatbot):",
-        f"1) Your CSV -> daily series with optional smoothing.",
+        "1) Your CSV -> daily series; gaps take the last known value, smoothing looks only backwards.",
         f"2) A sliding window of {seq} past days -> neural network ({variant.replace('_', '-').upper()}).",
         "3) CNN layers catch short patterns; LSTM layers catch longer trends; attention weights important days.",
-        f"4) Weights loaded from: {run_dir.name}/cnn_lstm_attention.pt",
+        f"4) Weights loaded from: {run_dir.name}/{weights_file(run_dir).name} (the saved variant is {variant}).",
     ]
     if metrics is not None and not metrics.empty:
-        best = metrics.sort_values("rmse").iloc[0]
-        lines.append(
-            f"On the held-out test split, the best trained variant was {best['model']} "
-            f"(RMSE {best['rmse']:,.1f} m3, R2 {best['r2']:.3f}). "
-            "Forecasts here still use the saved CNN-LSTM-Attention bundle from training."
-        )
+        lines.append(accuracy_text(metrics, meta, "m3", 1, "en"))
     return "\n".join(lines)
+
+
+def accuracy_text(metrics: pd.DataFrame, meta: dict, unit: str, decimals: int, lang: str) -> str:
+    """Accuracy of the model this chatbot uses, next to the best simple baseline on the same test points."""
+    def f(value: float) -> str:
+        return _fmt(float(value), lang, decimals)
+
+    if "type" not in metrics:  # runs made before walk-forward evaluation: single split, test-set early stopping
+        best = metrics.sort_values("rmse").iloc[0]
+        return _t(lang,
+                  f"Best holdout model: {best['model']} | MAE {f(best['mae'])} {unit}, RMSE {f(best['rmse'])} {unit}. "
+                  "Note: this older run used a single test split and is likely optimistic; retrain for fair numbers.",
+                  f"Sabse accha holdout model: {best['model']} | MAE {f(best['mae'])} {unit}, RMSE {f(best['rmse'])} {unit}. "
+                  "Dhyan dein: yeh purana run hai (ek hi test split), iske numbers zyada acche dikh sakte hain; "
+                  "sahi numbers ke liye dobara train karein.")
+    neural = metrics[metrics["type"] == "neural"]
+    used = neural[neural["model"] == meta.get("variant")]
+    row = (used if not used.empty else neural.sort_values("mae")).iloc[0]
+    base = metrics[metrics["type"] == "baseline"].sort_values("mae").iloc[0]
+    gap = 100 * (base["mae"] - row["mae"]) / base["mae"]
+    if gap > 2:
+        verdict_en = f"The model is {gap:.0f}% more accurate than this simple baseline."
+        verdict_hi = f"Model is simple tareeke se {gap:.0f}% zyada sahi hai."
+    elif gap < -2:
+        loss = 100 * (row["mae"] - base["mae"]) / row["mae"]
+        verdict_en = (f"The simple baseline is {loss:.0f}% more accurate than the model, "
+                      "so treat the model's forecasts with care.")
+        verdict_hi = (f"Simple tareeka model se {loss:.0f}% zyada sahi hai, "
+                      "isliye model ke anuman ko saavdhani se dekhein.")
+    else:
+        verdict_en = "The model and the simple baseline are about equally accurate."
+        verdict_hi = "Model aur simple tareeka lagbhag barabar sahi hain."
+    return _t(
+        lang,
+        "Walk-forward test (each point forecast only from earlier data):\n"
+        f"  Model used here: {row['model']} | MAE {f(row['mae'])} {unit}, RMSE {f(row['rmse'])} {unit}, "
+        f"relMAE {row['rel_mae']:.2f}.\n"
+        f"  Best simple baseline: {base['model']} | MAE {f(base['mae'])} {unit}, relMAE {base['rel_mae']:.2f}.\n"
+        f"  {verdict_en}\n"
+        "  (relMAE below 1 = better than simply repeating the last value.)",
+        "Walk-forward test (har point sirf pehle ke data se predict kiya gaya):\n"
+        f"  Yahan use hone wala model: {row['model']} | MAE {f(row['mae'])} {unit}, RMSE {f(row['rmse'])} {unit}, "
+        f"relMAE {row['rel_mae']:.2f}.\n"
+        f"  Sabse accha simple tareeka: {base['model']} | MAE {f(base['mae'])} {unit}, relMAE {base['rel_mae']:.2f}.\n"
+        f"  {verdict_hi}\n"
+        "  (relMAE 1 se kam = pichla value dohraane se behtar.)",
+    )
 
 
 def wants_graph(t: str) -> bool:
@@ -588,16 +627,19 @@ def lakh_axis(ax) -> None:
 
 def draw_rmse_bars(metrics: pd.DataFrame, out: Path, unit: str) -> None:
     rmse = metrics.groupby("model")["rmse"].mean().sort_values()
+    kinds = metrics.groupby("model")["type"].first() if "type" in metrics else pd.Series(dtype=str)
     plt.style.use("seaborn-v0_8-whitegrid")
-    fig, ax = plt.subplots(figsize=(8, 4.5))
-    colors = ["#2ca02c"] + ["#1f77b4"] * (len(rmse) - 1)  # best model in green
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    # best in green, simple baselines grey, neural models blue
+    colors = ["#2ca02c" if i == 0 else ("#7f7f7f" if kinds.get(name) == "baseline" else "#1f77b4")
+              for i, name in enumerate(rmse.index)]
     bars = ax.bar(rmse.index, rmse.values, color=colors)
     ax.bar_label(bars, labels=[_short_value(v, unit) for v in rmse.values], padding=3, fontsize=9)
-    ax.set(title="Holdout RMSE by model (shorter = more accurate; green = best)", xlabel="Model",
+    ax.set(title="Test RMSE by model (shorter = better; green = best, grey = simple baseline)", xlabel="Model",
            ylabel=f"RMSE ({'QTY' if unit == 'QTY' else 'm³'})")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
     ax.margins(y=0.15)
-    ax.tick_params(axis="x", rotation=20)
+    ax.tick_params(axis="x", rotation=25)
     fig.tight_layout()
     fig.savefig(out, dpi=160)
     plt.close(fig)
@@ -632,7 +674,7 @@ def plot_forecast(model, scaler, meta, history, days: int, run_dir: Path,
     hist_tail = history.tail(context_n).copy()
     hist_tail["date"] = pd.to_datetime(hist_tail["date"])
     recent = history["supply_m3"].iloc[-seq_len:]
-    fc = forecast_with_seq_len(model, scaler, recent, seq_len, days)
+    fc = forecast_future(model, scaler, recent, days, seq_len)
     last_date = pd.to_datetime(history["date"].iloc[-1])
     fut_dates = [last_date + pd.Timedelta(days=i) for i in range(1, days + 1)]
     out_dir = run_dir / "chatbot_graphs"
@@ -677,7 +719,7 @@ def next_periods(history: pd.DataFrame, count: int) -> list[tuple[pd.Timestamp, 
 
 def forecast_period_values(model, scaler, meta, history: pd.DataFrame, count: int) -> np.ndarray:
     seq_len = int(meta.get("sequence_length", 6))
-    return forecast_with_seq_len(model, scaler, history["supply_m3"], seq_len, count)
+    return forecast_future(model, scaler, history["supply_m3"], count, seq_len)
 
 
 def do_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int, lang: str = "en") -> str:
@@ -713,40 +755,36 @@ def explain_period_forecast(model, scaler, meta, history: pd.DataFrame, metrics:
     forecast = forecast_period_values(model, scaler, meta, history, 1)[0]
     next_label = next_periods(history, 1)[0][2]
     value = _fmt(float(forecast), lang, 2)
+    variant = meta.get("variant", "cnn_lstm_attention")
     lines = [
         _t(lang, "This is a model estimate, not a meter reading.", "Yeh model ka anuman hai, meter reading nahi."),
-        _t(lang, f"The CNN-LSTM-Attention model looks at the last {seq_len} billing periods and estimates the next period.",
-           f"CNN-LSTM-Attention model pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
+        _t(lang, f"The {variant} model looks at the last {seq_len} billing periods and estimates the next period.",
+           f"{variant} model pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
         _t(lang, f"Next period ({next_label}) estimate: {value} QTY.",
            f"Agle bill ({next_label}) ka anuman: lagbhag {value} QTY."),
         _t(lang, "Each period covers about two months. The source unit for QTY has not been confirmed.",
            "Har bill lagbhag do mahine ka hota hai. QTY ki unit abhi confirm nahi hai."),
     ]
     if metrics is not None and not metrics.empty:
-        best = metrics.sort_values("rmse").iloc[0]
-        rmse = _fmt(best["rmse"], lang, 2)
-        lines.append(_t(lang, f"In the holdout check, the lowest RMSE was {rmse} QTY ({best['model']}).",
-                        f"Holdout test mein sabse kam galti (RMSE) {rmse} QTY thi ({best['model']})."))
+        lines.append(accuracy_text(metrics, meta, "QTY", 2, lang))
     return "\n".join(lines)
 
 
 def explain_period_model(meta: dict, run_dir: Path, metrics: pd.DataFrame | None, lang: str = "en") -> str:
     seq_len = int(meta.get("sequence_length", 6))
+    variant = meta.get("variant", "cnn_lstm_attention")
     lines = [
         _t(lang, "This model is trained on Kharghar's combined customer QTY per two-month billing period.",
            "Yeh model Kharghar ke sabhi customers ki do-mahine ki total QTY par train hua hai."),
         _t(lang, f"It uses the last {seq_len} periods to estimate the next period.",
            f"Yeh pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
-        _t(lang, f"The saved model is in {run_dir.name}/cnn_lstm_attention.pt.",
-           f"Save kiya hua model {run_dir.name}/cnn_lstm_attention.pt mein hai."),
-        _t(lang, "The neural-network architecture is CNN-LSTM-Attention; the time step here means one billing period.",
-           "Neural network CNN-LSTM-Attention hai; yahan ek step matlab ek bill (do mahine)."),
+        _t(lang, f"The saved network is {variant} (file {run_dir.name}/{weights_file(run_dir).name}).",
+           f"Save kiya hua network {variant} hai (file {run_dir.name}/{weights_file(run_dir).name})."),
+        _t(lang, "It was chosen as the neural variant with the lowest walk-forward error; one time step is one billing period.",
+           "Yeh walk-forward test mein sabse kam galti wala neural model tha; ek step matlab ek bill (do mahine)."),
     ]
     if metrics is not None and not metrics.empty:
-        best = metrics.sort_values("rmse").iloc[0]
-        rmse = _fmt(best["rmse"], lang, 2)
-        lines.append(_t(lang, f"Best holdout RMSE in this run: {rmse} QTY ({best['model']}).",
-                        f"Is run mein sabse kam holdout RMSE: {rmse} QTY ({best['model']})."))
+        lines.append(accuracy_text(metrics, meta, "QTY", 2, lang))
     lines.append(_t(lang, "There are few periods, so treat forecasts as exploratory.",
                     "Data mein bills kam hain, isliye anuman ko sirf andaaza maanein."))
     return "\n".join(lines)
@@ -939,15 +977,8 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
     if "accur" in t or "metric" in t or "r2" in t or "rmse" in t or "how good" in t or "kitna sahi" in t:
         if metrics is None or metrics.empty:
             return _t(lang, "No metrics.csv in this run.", "Is run mein metrics.csv nahi hai."), ctx
-        best = metrics.sort_values("rmse").iloc[0]
         ctx.last_topic = "metrics"
-        mae, rmse = _fmt(best["mae"], lang, 2), _fmt(best["rmse"], lang, 2)
-        return _t(lang,
-                  f"Best holdout model: {best['model']} | MAE {mae} QTY, RMSE {rmse} QTY, R2 {best['r2']:.3f}. "
-                  "Lower MAE/RMSE is better; negative R2 means this small holdout was difficult to predict.",
-                  f"Sabse accha model (holdout test): {best['model']} | MAE {mae} QTY, RMSE {rmse} QTY, "
-                  f"R2 {best['r2']:.3f}. MAE/RMSE jitna kam, utna accha; R2 negative ka matlab hai ki "
-                  "yeh chhota test predict karna mushkil tha."), ctx
+        return accuracy_text(metrics, meta, "QTY", 2, lang), ctx
     if wants_explanation(t):
         if any(w in t for w in ("forecast", "next", "cycle", "agla", "agle", "anuman")) or ctx.last_topic == "forecast":
             return explain_period_forecast(model, scaler, meta, history, metrics, lang), ctx
@@ -1072,7 +1103,7 @@ def wants_explanation(t: str) -> bool:
 def do_forecast(model, scaler, meta, history, days: int) -> str:
     seq_len = int(meta.get("sequence_length", 30))
     recent = history["supply_m3"].iloc[-seq_len:]
-    fc = forecast_with_seq_len(model, scaler, recent, seq_len, days)
+    fc = forecast_future(model, scaler, recent, days, seq_len)
     last_date = pd.to_datetime(history["date"].iloc[-1])
     lines = [f"Last known: {last_date.date()} = {recent.iloc[-1]:.1f} m3."]
     for i, v in enumerate(fc, 1):
@@ -1148,11 +1179,8 @@ def answer(
     if "accur" in t or "metric" in t or "r2" in t or "rmse" in t or "how good" in t:
         if metrics is None:
             return "No metrics.csv in this run.", ctx
-        best = metrics.sort_values("rmse").iloc[0]
         ctx.last_topic = "metrics"
-        return (f"Best on hold-out test: {best['model']} | "
-                f"MAE {best['mae']:.2f} m3, RMSE {best['rmse']:.2f} m3, R2 {best['r2']:.4f} "
-                f"(averaged over {int(best['runs'])} run(s)). Lower error = better, R2 near 1 = better."), ctx
+        return accuracy_text(metrics, meta, "m3", 1, ctx.lang), ctx
     m = re.search(r"forecast\s*(\d+)?|next\s*(\d+)?\s*days?|(\d+)\s*days?\s*forecast", t)
     if "forecast" in t or "next" in t or "predict" in t or ("consumption" in t and ("tomorrow" in t or "next" in t)):
         days = 7

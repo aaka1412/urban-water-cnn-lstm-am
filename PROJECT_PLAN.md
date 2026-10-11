@@ -17,9 +17,17 @@
 4. Record environment, dataset provenance, time span, all hyperparameters, and random seeds.
 5. Compare the four models by averaged MAE, MSE, RMSE, and R-squared; inspect peak-day errors separately.
 
+## Done: evaluation methodology review
+
+1. Early stopping moved from the test split to the last training windows (refit on all training windows afterwards).
+2. All four variants tuned with the same Optuna budget before the first test point.
+3. Causal preprocessing: last-value gap filling, train-only clip limits, trailing Savitzky-Golay on inputs, scoring on raw values.
+4. Walk-forward evaluation with repeated seeds instead of one 80:20 split.
+5. Naive baselines with relMAE and MASE; Kharghar also reports 2- and 3-bill-ahead errors.
+
 ## Final: research reporting and deployment readiness
 
 1. Test a recent out-of-time period to mimic future forecasting.
-2. Decide whether smoothing belongs in the operational pipeline; avoid using future observations in a live setting.
+2. Decide whether causal smoothing helps on real data (compare with `--disable-smoothing`).
 3. Add optional external features only if their forecast-time availability is documented (weather, holiday, population proxies).
 4. Prepare the final results table, forecast/scatter figures, limitations, and reproducibility appendix.
