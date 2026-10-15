@@ -39,9 +39,8 @@ def test_clip_limits_ignore_the_test_period():
 
 def test_naive_baselines_use_only_past_values():
     history = np.array([1.0, 2, 3, 4, 5, 6, 7, 8, 9, 10])
-    forecasts = naive_forecasts(history, origin=8, horizon=2, ma_window=3, season=6)
+    forecasts = naive_forecasts(history, origin=8, horizon=2, season=6)
     assert forecasts["naive_last_value"].tolist() == [8.0, 8.0]
-    assert forecasts["moving_average_3"].tolist() == [7.0, 7.0]
     assert forecasts["seasonal_naive_6"].tolist() == [3.0, 4.0]
 
 
@@ -82,7 +81,7 @@ def test_walk_forward_scores_neural_models_and_baselines_on_the_same_points():
     folds = [Fold(train_end=origin, test_indices=(origin,)) for origin in (36, 37, 38, 39)]
     tuned = {"lstm": ModelParams(hidden_size=8)}
     predictions = walk_forward(raw, folds, 4, tuned, identity_preprocess, epochs=2, runs=1, seed=0,
-                               horizon=1, ma_window=3, season=6)
+                               horizon=1, season=6)
     points = predictions.groupby("model")["target_index"].apply(lambda s: sorted(s.unique()))
     assert all(index == [36, 37, 38, 39] for index in points)
     report = summarize(predictions, mase_scale=1.0)

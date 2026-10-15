@@ -93,8 +93,8 @@ def tune_all(raw: np.ndarray, train_end: int, seq_len: int, preprocess: Preproce
 
 
 def walk_forward(raw: np.ndarray, folds: Sequence[Fold], seq_len: int, tuned: dict[str, ModelParams],
-                 preprocess: Preprocess, epochs: int, runs: int, seed: int, horizon: int, ma_window: int,
-                 season: int, progress: Callable[[str], None] | None = None) -> pd.DataFrame:
+                 preprocess: Preprocess, epochs: int, runs: int, seed: int, horizon: int, season: int,
+                 progress: Callable[[str], None] | None = None) -> pd.DataFrame:
     """Score every neural variant (runs seeds each) and every baseline on the same walk-forward folds.
 
     Returns one row per (model, run, origin, horizon) with the forecast and the raw actual value.
@@ -108,7 +108,7 @@ def walk_forward(raw: np.ndarray, folds: Sequence[Fold], seq_len: int, tuned: di
         targets_for = {origin: [origin + step for step in range(horizon) if origin + step < len(raw)]
                        for origin in fold.test_indices}
         for origin, target_positions in targets_for.items():
-            for name, values in naive_forecasts(raw, origin, len(target_positions), ma_window, season).items():
+            for name, values in naive_forecasts(raw, origin, len(target_positions), season).items():
                 for step, (position, value) in enumerate(zip(target_positions, values), 1):
                     if not np.isnan(value):
                         rows.append({"model": name, "type": "baseline", "run": 0, "origin": origin, "horizon": step,

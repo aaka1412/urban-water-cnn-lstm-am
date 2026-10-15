@@ -8,7 +8,7 @@ Evaluation protocol (see src/water_forecast/evaluation.py):
     and forecast it (plus up to --horizon bills ahead, to check multi-step forecasts);
   * early stopping uses the last training windows, never the test bill;
   * all four neural variants get the same --trials tuning budget on data before the first test bill;
-  * naive baselines (last value, moving average, same bill last year) are scored on the same bills.
+  * naive baselines (last value, same bill last year) are scored on the same bills.
 
 Usage:
   python run_kharghar_experiment.py --fast
@@ -160,7 +160,7 @@ def main() -> None:
 
     print(f"Walk-forward test over the last {args.test_periods} bills ({args.runs} seed(s) per model)...")
     predictions = walk_forward(raw, folds, args.sequence_length, tuned, identity_preprocess, args.epochs, args.runs,
-                               args.seed, horizon=args.horizon, ma_window=args.sequence_length, season=6,
+                               args.seed, horizon=args.horizon, season=6,
                                progress=lambda message: print("  " + message))
     scale = naive_scale(raw, first_test)
     report = summarize(predictions, scale)

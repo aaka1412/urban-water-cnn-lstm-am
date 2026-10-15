@@ -7,7 +7,7 @@ An end-to-end, reproducible implementation of the Stage-I project: daily urban w
 - Causal data cleaning: daily reindexing with last-value gap filling, outlier limits fitted on training days only, and backward-looking (causal) Savitzky-Golay smoothing of model inputs.
 - Walk-forward (rolling-origin) evaluation with train-only scaling and early stopping on training windows.
 - CNN-LSTM-Attention, LSTM, CNN-LSTM, and LSTM-Attention models, each tuned with the same Optuna TPE budget.
-- Naive baselines (last value, moving average, seasonal naive) scored on the same test points.
+- Naive baselines (last value, seasonal naive) scored on the same test points.
 - MAE, MSE, RMSE, R-squared, relMAE and MASE reports; actual-vs-forecast, scatter, model-comparison and (Kharghar) horizon plots.
 - A deterministic synthetic daily-supply generator so the project runs immediately. Replace it with a real CSV when available.
 

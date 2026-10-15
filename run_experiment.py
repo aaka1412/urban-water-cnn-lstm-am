@@ -86,7 +86,7 @@ def main() -> None:
         json.dumps({variant: asdict(params) for variant, params in tuned.items()}, indent=2))
 
     predictions = walk_forward(raw, folds, args.sequence_length, tuned, preprocess, args.epochs, args.runs, args.seed,
-                               horizon=1, ma_window=7, season=7, progress=lambda message: print("  " + message))
+                               horizon=1, season=7, progress=lambda message: print("  " + message))
     report = summarize(predictions, naive_scale(raw, first_test))
     report.to_csv(output / "metrics.csv", index=False)
     wide = mean_forecasts(predictions)
