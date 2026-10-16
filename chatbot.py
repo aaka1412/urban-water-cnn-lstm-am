@@ -77,6 +77,13 @@ class ChatContext:
     last_graph_describe: Callable[[str], str] | None = None
     lang_mode: str = "auto"  # "auto" follows the user's wording; "en" / "hi" are fixed
     lang: str = "en"  # language of the current reply
+    # True once last_topic is assigned; callers reset it to tell whether *this* answer set a topic.
+    topic_fresh: bool = False
+
+    def __setattr__(self, name: str, value) -> None:
+        if name == "last_topic":
+            object.__setattr__(self, "topic_fresh", True)
+        object.__setattr__(self, name, value)
 
 
 HINGLISH_WORDS = {
@@ -112,14 +119,129 @@ def _t(lang: str, en: str, hi: str) -> str:
     return hi if lang == "hi" else en
 
 
+_GREETINGS = {"hi", "hii", "hiii", "hello", "helo", "hey", "hey there", "hi there", "hello there", "yo", "hola",
+              "namaste", "namaskar", "good morning", "good afternoon", "good evening"}
+_THANKS = {"thanks", "thank you", "thanks a lot", "thank you so much", "thx", "ty", "ok thanks", "okay thanks",
+           "great thanks", "dhanyavad", "dhanyawad", "shukriya"}
+_ACKS = {"ok", "okay", "cool", "nice", "great", "got it", "alright", "fine", "theek hai", "thik hai", "accha", "achha"}
+_HOW_ARE_YOU = {"how are you", "how are you doing", "how r u", "whats up", "what's up", "sup",
+                "kaise ho", "kaise hain", "kya haal hai", "kya haal"}
+_WHO = {"who are you", "what are you", "what can you do", "what do you do", "what can i ask",
+        "tum kaun ho", "aap kaun ho", "kya kar sakte ho", "aap kya kar sakte ho"}
+_BYE = {"bye", "goodbye", "bye bye", "see you", "see ya", "alvida"}
+
+
+def small_talk(t: str, lang: str, billing: bool) -> str | None:
+    """Friendly replies for greetings and chit-chat, so 'hi' gets a conversational answer instead of a command list."""
+    norm = " ".join(re.sub(r"[^a-z' ]+", " ", t.lower()).split())
+    if not norm:
+        return None
+    if billing:
+        what_en = ("- **Forecast** the next billing cycle (or the next few)\n"
+                   "- **Summarise** recent bills, averages, highs and lows\n"
+                   "- **Chart** recent totals or the forecast, and explain the trend\n"
+                   "- Tell you **how accurate** the model is")
+        what_hi = ("- Agle bill (ya agle kuch bills) ka **anuman**\n"
+                   "- Haal ke bills, average, sabse zyada / sabse kam ka **summary**\n"
+                   "- Bills ya anuman ka **graph**, aur trend ka matlab\n"
+                   "- Model **kitna sahi** hai")
+        try_en, try_hi = "*What will the next billing cycle be?*", "*Agla bill kitna hoga?*"
+    else:
+        what_en = ("- **Forecast** tomorrow or the next few days\n"
+                   "- **Summarise** recent days, averages and peaks\n"
+                   "- **Chart** history or the forecast, and explain the trend\n"
+                   "- Tell you **how accurate** the model is")
+        what_hi = what_en
+        try_en = try_hi = "*Forecast the next 7 days*"
+    if norm in _GREETINGS:
+        return _t(lang,
+                  f"Hi there! I'm Water Forecast, your water-supply assistant. I can:\n\n{what_en}\n\n"
+                  f"What would you like to know? You could start with {try_en}",
+                  f"Namaste! Main Water Forecast hoon, aapka water-supply assistant. Main yeh kar sakta hoon:\n\n"
+                  f"{what_hi}\n\nAap kya jaanna chahenge? Shuruaat ke liye poochiye: {try_hi}")
+    if norm in _HOW_ARE_YOU:
+        return _t(lang, f"I'm doing well, thanks for asking! Ready to crunch some numbers. Want to try {try_en}",
+                  f"Main badhiya hoon, poochne ke liye shukriya! Kuch numbers dekhein? Poochiye: {try_hi}")
+    if norm in _WHO:
+        return _t(lang,
+                  "I'm Water Forecast, a chat assistant built on your trained CNN-LSTM-Attention model. "
+                  f"I run fully offline on your own data. I can:\n\n{what_en}",
+                  "Main Water Forecast hoon, aapke trained CNN-LSTM-Attention model par bana chat assistant. "
+                  f"Main poori tarah offline, aapke data par chalta hoon. Main yeh kar sakta hoon:\n\n{what_hi}")
+    if norm in _THANKS:
+        return _t(lang, "You're welcome! Let me know if you'd like another forecast or a chart.",
+                  "Koi baat nahi! Aur koi anuman ya graph chahiye to bataiye.")
+    if norm in _ACKS:
+        return _t(lang, "Great. What would you like to look at next?", "Badhiya. Ab aage kya dekhna chahenge?")
+    if norm in _BYE:
+        return _t(lang, "Goodbye! Come back anytime you need a forecast.",
+                  "Alvida! Jab bhi anuman chahiye, wapas aaiye.")
+    return None
+
+
+def _num(value: float, signed: bool = False) -> str:
+    """One number style for every reply: Indian digit grouping, no decimals (4302171.9 -> 43,02,172).
+
+    Values below 100 keep one decimal so small numbers do not collapse to 0.
+    """
+    v = float(value)
+    sign = "-" if v < 0 else ("+" if signed and v > 0 else "")
+    v = abs(v)
+    if v < 100:
+        return sign + (f"{v:.1f}".rstrip("0").rstrip(".") or "0")
+    digits = f"{v:.0f}"
+    head, groups = digits[:-3], [digits[-3:]]
+    while head:
+        groups.insert(0, head[-2:])
+        head = head[:-2]
+    return sign + ",".join(groups)
+
+
 def _fmt(value: float, lang: str, decimals: int, signed: bool = False) -> str:
-    """Hinglish replies show big numbers in lakh (42.40 lakh); English keeps full digits."""
-    sign = "+" if signed else ""
-    if lang == "hi" and abs(value) >= 1e5:
-        return f"{value / 1e5:{sign},.2f} lakh"
-    if lang == "hi" and abs(value) >= 100:
-        return f"{value:{sign},.0f}"  # whole numbers read easier below one lakh
-    return f"{value:{sign},.{decimals}f}"
+    """Kept for existing callers; every language now uses the same Indian-grouped whole numbers."""
+    return _num(value, signed)
+
+
+def _span(start: pd.Timestamp, end: pd.Timestamp) -> str:
+    """'1 Aug – 30 Sep 2026' instead of '2026-08-01 to 2026-09-30'."""
+    return f"{start.day} {start:%b} – {end.day} {end:%b %Y}"
+
+
+# The moving-average baseline was removed from training (commit 79c51cd); older runs still list it in
+# metrics.csv. Dropping it here keeps every run compared against the same baselines the code produces now.
+RETIRED_BASELINES = ("moving_average_",)
+
+
+def active_metrics(metrics: pd.DataFrame | None) -> pd.DataFrame | None:
+    if metrics is None or "model" not in metrics:
+        return metrics
+    keep = ~metrics["model"].astype(str).str.startswith(RETIRED_BASELINES)
+    return metrics[keep].reset_index(drop=True)
+
+
+def attach_forecast_errors(meta: dict, run_dir: Path, metrics: pd.DataFrame | None) -> None:
+    """Store the deployed model's average walk-forward error for 1, 2, 3... steps ahead in meta.
+
+    Forecast ranges are 'estimate ± this error'. The error never shrinks with distance: with only a few
+    test bills a later step can score lower by chance, and a narrower range further out would mislead.
+    """
+    variant, errors = meta.get("variant"), []
+    path = run_dir / "horizon_metrics.csv"
+    if path.exists():
+        table = pd.read_csv(path)
+        rows = table[table["model"] == variant].sort_values("horizon")
+        errors = [float(v) for v in np.maximum.accumulate(rows["mae"].to_numpy(dtype=float))] if len(rows) else []
+    if not errors and metrics is not None and "mae" in metrics:
+        row = metrics[metrics["model"] == variant]
+        if not row.empty:
+            errors = [float(row["mae"].iloc[0])]
+    meta["forecast_errors"] = errors
+
+
+def forecast_error(meta: dict, step: int) -> float | None:
+    """Typical error for a forecast `step` periods ahead; beyond the tested horizon, reuse the furthest one."""
+    errors = meta.get("forecast_errors") or []
+    return errors[min(step, len(errors)) - 1] if errors else None
 
 
 DATASET_GUIDE = """What dataset I need for Navi Mumbai:
@@ -252,7 +374,8 @@ def load_all(args):
         history = pd.read_csv(run_dir / "cleaned_daily_supply.csv", parse_dates=["date"])
     metrics = None
     if (run_dir / "metrics.csv").exists():
-        metrics = pd.read_csv(run_dir / "metrics.csv")
+        metrics = active_metrics(pd.read_csv(run_dir / "metrics.csv"))
+    attach_forecast_errors(meta, run_dir, metrics)
     return run_dir, model, scaler, meta, history, metrics
 
 
@@ -269,15 +392,15 @@ def explain_recent(history: pd.DataFrame, n: int) -> str:
     lines = [
         f"These are observed daily totals from your CSV (cleaned/smoothed), not predictions.",
         f"Period: {start_d} to {end_d} ({n} days).",
-        f"Average over those days: {mean_n:,.1f} m3/day.",
-        f"Highest: {values.max():,.1f} m3 | Lowest: {values.min():,.1f} m3.",
-        f"Change from first to last day in the window: {trend:+,.1f} m3.",
+        f"Average over those days: {_num(mean_n)} m3/day.",
+        f"Highest: {_num(values.max())} m3 | Lowest: {_num(values.min())} m3.",
+        f"Change from first to last day in the window: {_num(trend, True)} m3.",
     ]
     if abs(ref) > 1e-6:
         pct = 100 * delta / ref
         lines.append(
-            f"Compared with the last-30-day average ({ref:,.1f} m3/day): "
-            f"{'above' if delta >= 0 else 'below'} by {abs(delta):,.1f} m3/day ({pct:+.1f}%)."
+            f"Compared with the last-30-day average ({_num(ref)} m3/day): "
+            f"{'above' if delta >= 0 else 'below'} by {_num(abs(delta))} m3/day ({pct:+.1f}%)."
         )
     lines.append("m3 = cubic metres of water supplied that day for the whole area in your file.")
     return "\n".join(lines)
@@ -294,12 +417,12 @@ def explain_forecast(model, scaler, meta, history, days: int, metrics: pd.DataFr
         f"This is a model forecast, not a meter reading.",
         f"The saved {variant.replace('_', '-')} network looks at the last {seq_len} days of supply, "
         f"then predicts the next day(s). Each extra day reuses the previous prediction as input (roll-forward).",
-        f"Last known date: {last_date.date()} at {last_actual:,.1f} m3/day.",
+        f"Last known date: {last_date.date()} at {_num(last_actual)} m3/day.",
     ]
     if days == 1:
-        lines.append(f"Predicted next day: {fc[0]:,.1f} m3 ({fc[0] - last_actual:+,.1f} vs last known).")
+        lines.append(f"Predicted next day: {_num(fc[0])} m3 ({_num(fc[0] - last_actual, True)} vs last known).")
     else:
-        lines.append(f"Next {days} days average: {fc.mean():,.1f} m3/day (range {fc.min():,.1f}–{fc.max():,.1f}).")
+        lines.append(f"Next {days} days average: {_num(fc.mean())} m3/day (range {_num(fc.min())}–{_num(fc.max())}).")
     if metrics is not None and not metrics.empty:
         lines.append(accuracy_text(metrics, meta, "m3", 1, "en"))
     lines.append("Real days can differ from events the model never saw.")
@@ -727,25 +850,54 @@ def do_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int, l
     forecasts = forecast_period_values(model, scaler, meta, history, count)
     periods = next_periods(history, count)
     last_label, last_value = history["billing_period"].iloc[-1], float(history["supply_m3"].iloc[-1])
+
+    def band(step: int, value: float, hi: bool) -> str:
+        err = forecast_error(meta, step)
+        if err is None:
+            return ""
+        low, high = _num(value - err), _num(value + err)
+        return f" (andaazan {low} se {high} ke beech)" if hi else f" (likely {low} – {high})"
+
+    err1 = forecast_error(meta, 1)
     if lang == "hi":
         if count == 1:
             (start, end, label), value = periods[0], float(forecasts[0])
             change = value - last_value
-            return "\n".join([
-                f"Agle bill ({label}, {start.date()} se {end.date()}) mein lagbhag {_fmt(value, lang, 2)} QTY ka anuman hai.",
-                f"Pichla recorded bill {last_label} = {_fmt(last_value, lang, 2)} QTY tha, "
-                f"yaani {_fmt(change, lang, 2, True)}{_pct_text(change, last_value)} ka badlav.",
-                "Yeh model ka anuman hai, asli reading nahi. QTY ki unit abhi confirm nahi hai.",
-            ])
-        lines = [f"Pichla recorded bill: {last_label} = {_fmt(last_value, lang, 2)} QTY."]
-        for (start, end, label), value in zip(periods, forecasts):
-            lines.append(f"  {label} ({start.date()} se {end.date()}): lagbhag {_fmt(float(value), lang, 2)} QTY ka anuman.")
-        lines.append("Yeh model ke anuman hain (har bill do mahine ka); QTY ki unit abhi confirm nahi hai.")
+            lines = [
+                f"Agle bill ({label}, {_span(start, end)}) mein lagbhag {_num(value)} QTY ka anuman hai"
+                f"{band(1, value, True)}.",
+                f"Pichla recorded bill {last_label} = {_num(last_value)} QTY tha, "
+                f"yaani {_num(change, True)}{_pct_text(change, last_value)} ka badlav.",
+                "",
+            ]
+            if err1 is not None:
+                lines.append(f"Range = anuman ± model ki average test galti ({_num(err1)} QTY).")
+            lines.append("Yeh model ka anuman hai, asli reading nahi. QTY ki unit abhi confirm nahi hai.")
+            return "\n".join(lines)
+        lines = [f"Pichla recorded bill: {last_label} = {_num(last_value)} QTY."]
+        for step, ((start, end, label), value) in enumerate(zip(periods, forecasts), 1):
+            lines.append(f"  {label} ({_span(start, end)}): lagbhag {_num(float(value))} QTY{band(step, float(value), True)}")
+        lines.append("Range = anuman ± model ki us doori par average test galti. QTY ki unit abhi confirm nahi hai.")
         return "\n".join(lines)
-    lines = [f"Last recorded period: {last_label} = {last_value:,.2f} QTY."]
-    for (start, end, label), value in zip(periods, forecasts):
-        lines.append(f"  Forecast {label} ({start.date()} to {end.date()}): {value:,.2f} QTY.")
-    lines.append("This is a model estimate for a two-month billing period; QTY's source unit is unconfirmed.")
+    if count == 1:
+        (start, end, label), value = periods[0], float(forecasts[0])
+        change = value - last_value
+        lines = [
+            f"The next billing period, {label} ({_span(start, end)}), is forecast at about {_num(value)} QTY"
+            + (f", likely between {_num(value - err1)} and {_num(value + err1)}." if err1 is not None else "."),
+            f"That is {_num(change, True)}{_pct_text(change, last_value)} compared with the last recorded bill "
+            f"({last_label} = {_num(last_value)} QTY).",
+            "",
+        ]
+        if err1 is not None:
+            lines.append(f"The range is the estimate ± the model's average test error ({_num(err1)} QTY).")
+        lines.append("This is a model estimate, not a meter reading; QTY's source unit is unconfirmed.")
+        return "\n".join(lines)
+    lines = [f"Last recorded period: {last_label} = {_num(last_value)} QTY."]
+    for step, ((start, end, label), value) in enumerate(zip(periods, forecasts), 1):
+        lines.append(f"  {label} ({_span(start, end)}): {_num(float(value))} QTY{band(step, float(value), False)}")
+    lines.append("Ranges are the estimate ± the model's average test error at that distance ahead. "
+                 "QTY's source unit is unconfirmed.")
     return "\n".join(lines)
 
 
@@ -762,6 +914,16 @@ def explain_period_forecast(model, scaler, meta, history: pd.DataFrame, metrics:
            f"{variant} model pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
         _t(lang, f"Next period ({next_label}) estimate: {value} QTY.",
            f"Agle bill ({next_label}) ka anuman: lagbhag {value} QTY."),
+    ]
+    err = forecast_error(meta, 1)
+    if err is not None:
+        low, high = _num(float(forecast) - err), _num(float(forecast) + err)
+        lines.append(_t(lang,
+                        f"Likely range: {low} – {high}. In past tests the model was off by about {_num(err)} QTY "
+                        "on average, so a real bill anywhere in that range would be normal.",
+                        f"Andaazan range: {low} se {high}. Pichle tests mein model average {_num(err)} QTY "
+                        "se chooka tha, isliye is range mein koi bhi asli bill normal hoga."))
+    lines += [
         _t(lang, "Each period covers about two months. The source unit for QTY has not been confirmed.",
            "Har bill lagbhag do mahine ka hota hai. QTY ki unit abhi confirm nahi hai."),
     ]
@@ -873,7 +1035,8 @@ def _period_value(target_start: pd.Timestamp, model, scaler, meta,
     return next_periods(history, steps)[-1][2], float(forecasts[-1]), "forecast"
 
 
-def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, lang: str = "en") -> str | None:
+def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, lang: str = "en",
+                        ctx: ChatContext | None = None) -> str | None:
     match = re.search(rf"\b({MONTH_PATTERN})\s*(?:-|/|\s|\bto\b)\s*({MONTH_PATTERN})\s*(20\d{{2}})?\b", text.upper())
     if not match:
         return None
@@ -908,9 +1071,11 @@ def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, l
             return result
         label, value, kind = result
         if kind == "recorded":
-            return _t(lang, f"Recorded total for {label}: {value:,.2f} QTY{assumed_year}.",
+            return _t(lang, f"Recorded total for {label}: {_num(value)} QTY{assumed_year}.",
                       f"{label} ka recorded total: {_fmt(value, lang, 2)} QTY{assumed_year}.")
         steps = month_offset // 2 + 1
+        if ctx is not None:
+            ctx.last_forecast_days = min(12, steps)
         return (_t(lang, f"Estimate through {requested_label}{assumed_year}:\n",
                    f"{requested_label} tak ka anuman{assumed_year}:\n")
                 + do_period_forecast(model, scaler, meta, history, steps, lang))
@@ -918,6 +1083,8 @@ def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, l
     # The pair straddles two bills (e.g. NOV-DEC sits across OCT-NOV and DEC-JAN): estimate it from both halves.
     first = _period_value(target_start - pd.DateOffset(months=1), model, scaler, meta, history, lang)
     second = _period_value(target_start + pd.DateOffset(months=1), model, scaler, meta, history, lang)
+    if ctx is not None and month_offset + 1 >= 0:
+        ctx.last_forecast_days = min(12, (month_offset + 1) // 2 + 1)  # forecast table runs through the later bill
     for part in (first, second):
         if isinstance(part, str):
             return part
@@ -936,9 +1103,9 @@ def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, l
     return "\n".join([
         f"{requested_label} is not one of Kharghar's billing periods{assumed_year}.",
         f"Bills cover {label_a[:7]} and {label_b[:7]}, so these two months fall in two different bills:",
-        f"  {label_a} ({kind_a}): {value_a:,.2f} QTY",
-        f"  {label_b} ({kind_b}): {value_b:,.2f} QTY",
-        f"Rough {requested_label} estimate: about {estimate:,.2f} QTY "
+        f"  {label_a} ({kind_a}): {_num(value_a)} QTY",
+        f"  {label_b} ({kind_b}): {_num(value_b)} QTY",
+        f"Rough {requested_label} estimate: about {_num(estimate)} QTY "
         "(half of each bill, assuming use is spread evenly over each bill's two months).",
     ])
 
@@ -965,10 +1132,11 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
                 return _t(lang, "No metrics.csv in this run.", "Is run mein metrics.csv nahi hai."), ctx
             return graph_reply(ctx, "graph_metrics", plot_model_comparison(metrics, run_dir, "QTY"), open_graph)
         if any(w in t for w in ("forecast", "predict", "next", "agla", "agle", "anuman")):
+            ctx.last_forecast_days = max(1, min(12, nums[0] if nums else 1))
             return graph_reply(ctx, "graph_forecast", plot_period_forecast(
-                model, scaler, meta, history, nums[0] if nums else 1, run_dir, metrics), open_graph)
-        return graph_reply(ctx, "graph_recent", plot_period_history(history, nums[0] if nums else 6, run_dir),
-                           open_graph)
+                model, scaler, meta, history, ctx.last_forecast_days, run_dir, metrics), open_graph)
+        ctx.last_n = max(1, min(len(history), nums[0] if nums else 6))
+        return graph_reply(ctx, "graph_recent", plot_period_history(history, ctx.last_n, run_dir), open_graph)
     if "dataset" in t or "what data" in t or "which data" in t:
         return _t(lang, PERIOD_DATASET_GUIDE, PERIOD_DATASET_GUIDE_HI), ctx
     if any(phrase in t for phrase in ("how does the model", "how do you predict", "how does this work",
@@ -992,7 +1160,7 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
                         "then say 'explain this'.",
                   "Pehle kuch poochiye (agla bill, pichle bills, average, sabse zyada/kam, accuracy); "
                   "phir 'samjhao' likhiye."), ctx
-    named_period = answer_named_period(text, model, scaler, meta, history, lang)
+    named_period = answer_named_period(text, model, scaler, meta, history, lang, ctx)
     if named_period is not None:
         is_forecast = any(marker in named_period for marker in ("Estimate through", "(forecast)", "tak ka anuman", "(anuman)"))
         ctx.last_topic = "forecast" if is_forecast else "recent"
@@ -1009,7 +1177,7 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
     if forecast_request:
         numbers = [int(value) for value in re.findall(r"\d+", t)]
         count = numbers[0] if numbers else 1
-        ctx.last_topic = "forecast"
+        ctx.last_topic, ctx.last_forecast_days = "forecast", max(1, min(12, count))
         return do_period_forecast(model, scaler, meta, history, count, lang), ctx
     if "average" in t or "mean" in t or "ausat" in t:
         numbers = [int(value) for value in re.findall(r"\d+", t)]
@@ -1105,12 +1273,12 @@ def do_forecast(model, scaler, meta, history, days: int) -> str:
     recent = history["supply_m3"].iloc[-seq_len:]
     fc = forecast_future(model, scaler, recent, days, seq_len)
     last_date = pd.to_datetime(history["date"].iloc[-1])
-    lines = [f"Last known: {last_date.date()} = {recent.iloc[-1]:.1f} m3."]
+    lines = [f"Last known: {last_date.date()} = {_num(recent.iloc[-1])} m3."]
     for i, v in enumerate(fc, 1):
         day = (last_date + pd.Timedelta(days=i)).date()
-        lines.append(f"  +{i}d {day}: {v:.1f} m3")
+        lines.append(f"  +{i}d {day}: {_num(v)} m3")
     if days > 1:
-        lines.append(f"Average next {days} days: {fc.mean():.1f} m3/day.")
+        lines.append(f"Average next {days} days: {_num(fc.mean())} m3/day.")
     return "\n".join(lines)
 
 
@@ -1122,6 +1290,9 @@ def answer(
     if switched is not None:
         return switched, ctx
     ctx.lang = detect_lang(t, ctx.lang_mode)
+    chat = small_talk(t, ctx.lang, meta.get("data_frequency") == "two_month_billing_period")
+    if chat is not None:
+        return chat, ctx
     if meta.get("data_frequency") == "two_month_billing_period":
         return answer_period(text, model, scaler, meta, history, metrics, run_dir, ctx, open_graph=open_graph)
     # Daily mode: graph readings follow the reply language; other daily answers are English only.
@@ -1203,22 +1374,22 @@ def answer(
         if sel.empty:
             return f"No data for {ym}. Available: {d.min().date()} to {d.max().date()}.", ctx
         ctx.last_topic = "average"
-        return f"Average supply in {ym}: {sel['supply_m3'].mean():.1f} m3/day over {len(sel)} days.", ctx
+        return f"Average supply in {ym}: {_num(sel['supply_m3'].mean())} m3/day over {len(sel)} days.", ctx
     m = re.search(r"average.*last\s*(\d+)", t)
     if m or ("average" in t and "mean" in t) or ("average" in t):
         n = int(m.group(1)) if m else 30
         n = max(1, min(len(history), n))
         sel = history.tail(n)
         ctx.last_topic = "average"
-        return f"Average of last {n} days: {sel['supply_m3'].mean():.1f} m3/day (up to {pd.to_datetime(history['date'].iloc[-1]).date()}).", ctx
+        return f"Average of last {n} days: {_num(sel['supply_m3'].mean())} m3/day (up to {pd.to_datetime(history['date'].iloc[-1]).date()}).", ctx
     if "peak" in t or "highest" in t or "maximum" in t or "max" in t:
         i = history["supply_m3"].idxmax()
         ctx.last_topic = "peak"
-        return f"Peak in known history: {history.loc[i, 'supply_m3']:.1f} m3 on {pd.to_datetime(history.loc[i, 'date']).date()}.", ctx
+        return f"Peak in known history: {_num(history.loc[i, 'supply_m3'])} m3 on {pd.to_datetime(history.loc[i, 'date']).date()}.", ctx
     if "lowest" in t or "minimum" in t or "min" in t or "least" in t:
         i = history["supply_m3"].idxmin()
         ctx.last_topic = "lowest"
-        return f"Lowest in known history: {history.loc[i, 'supply_m3']:.1f} m3 on {pd.to_datetime(history.loc[i, 'date']).date()}.", ctx
+        return f"Lowest in known history: {_num(history.loc[i, 'supply_m3'])} m3 on {pd.to_datetime(history.loc[i, 'date']).date()}.", ctx
     if "last" in t and "day" in t:
         nums = re.findall(r"\d+", t)
         n = int(nums[0]) if nums else 7
@@ -1227,7 +1398,7 @@ def answer(
         ctx.last_topic, ctx.last_n = "recent", n
         lines = ["Recent readings:"]
         for _, r in tail.iterrows():
-            lines.append(f"  {pd.to_datetime(r['date']).date()}: {r['supply_m3']:.1f} m3")
+            lines.append(f"  {pd.to_datetime(r['date']).date()}: {_num(r['supply_m3'])} m3")
         return "\n".join(lines), ctx
     if "hello" in t or "hi" == t:
         return (
