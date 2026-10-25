@@ -1,0 +1,221 @@
+{
+ "results": [
+  [
+   "unauthenticated /overview redirects to /login",
+   true,
+   ""
+  ],
+  [
+   "user login lands on overview",
+   true,
+   "http://localhost:8000/overview"
+  ],
+  [
+   "overview shows 13 real cards (records=32, best model)",
+   true,
+   ""
+  ],
+  [
+   "overview chart canvas rendered",
+   true,
+   ""
+  ],
+  [
+   "page /upload renders \"Upload history\"",
+   true,
+   ""
+  ],
+  [
+   "page /analytics renders \"Yearly totals\"",
+   true,
+   ""
+  ],
+  [
+   "page /models renders \"Comparison table\"",
+   true,
+   ""
+  ],
+  [
+   "page /training renders \"Model validation and reliability\"",
+   true,
+   ""
+  ],
+  [
+   "page /confusion renders \"Derived evaluation\"",
+   true,
+   ""
+  ],
+  [
+   "page /history renders \"Prediction History\"",
+   true,
+   ""
+  ],
+  [
+   "page /reports renders \"Reports and Downloads\"",
+   true,
+   ""
+  ],
+  [
+   "page /profile renders \"Metric guide\"",
+   true,
+   ""
+  ],
+  [
+   "comparison lists all 6 models",
+   true,
+   ""
+  ],
+  [
+   "comparison has 6 charts",
+   true,
+   "6"
+  ],
+  [
+   "loss-curve notice present (no fabricated curves)",
+   true,
+   ""
+  ],
+  [
+   "confusion matrix grid + disclaimer",
+   true,
+   ""
+  ],
+  [
+   "bad upload shows rejection reason",
+   true,
+   ""
+  ],
+  [
+   "good upload shows validation table + preview",
+   true,
+   ""
+  ],
+  [
+   "confirmation marks dataset ready",
+   true,
+   ""
+  ],
+  [
+   "prediction shows forecast, ranges, in-sample warning",
+   true,
+   ""
+  ],
+  [
+   "history lists the prediction",
+   true,
+   ""
+  ],
+  [
+   "normal user bounced from /admin to admin login",
+   true,
+   "http://localhost:8000/admin/login"
+  ],
+  [
+   "original chatbot UI loads under /chatbot",
+   true,
+   ""
+  ],
+  [
+   "chatbot answers with a real forecast",
+   true,
+   "9, 03:37 AM Explain this forecast Graph forecast 3 periods How accurate is the model? Auto English Hinglish  Forecasts come from a trained model, not live meters. Check important numbers.  ← Dashboard"
+  ],
+  [
+   "logout returns to login and clears access",
+   true,
+   ""
+  ],
+  [
+   "after logout /overview is protected again",
+   true,
+   ""
+  ],
+  [
+   "normal user cannot sign in on admin login",
+   true,
+   ""
+  ],
+  [
+   "admin login lands on /admin",
+   true,
+   "http://localhost:8000/admin"
+  ],
+  [
+   "admin tab Overview",
+   true,
+   ""
+  ],
+  [
+   "admin tab Datasets",
+   true,
+   ""
+  ],
+  [
+   "admin tab Models",
+   true,
+   ""
+  ],
+  [
+   "admin tab Predictions",
+   true,
+   ""
+  ],
+  [
+   "admin tab Users",
+   true,
+   ""
+  ],
+  [
+   "admin tab Audit log",
+   true,
+   ""
+  ],
+  [
+   "admin re-evaluate works",
+   true,
+   ""
+  ],
+  [
+   "mobile: sidebar hidden, burger visible",
+   true,
+   ""
+  ],
+  [
+   "mobile: no horizontal page overflow",
+   true,
+   "390/390"
+  ],
+  [
+   "mobile: comparison page no page-level overflow",
+   true,
+   "390/390"
+  ]
+ ],
+ "errors": [
+  "[console] http://localhost:8000/overview Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/login Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/upload Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/analytics Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/models Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/training Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/confusion Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/history Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/reports Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/profile Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/models Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/confusion Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/upload Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/upload Failed to load resource: the server responded with a status of 422 (Unprocessable Entity)",
+  "[console] http://localhost:8000/predict Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/history Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/admin Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/chatbot Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/overview Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/overview Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/admin/login Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/admin/login Failed to load resource: the server responded with a status of 401 (Unauthorized)",
+  "[console] http://localhost:8000/admin/login Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/login Failed to load resource: net::ERR_NAME_NOT_RESOLVED",
+  "[console] http://localhost:8000/models Failed to load resource: net::ERR_NAME_NOT_RESOLVED"
+ ]
+}
