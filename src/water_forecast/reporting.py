@@ -15,9 +15,17 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 def metrics(actual: np.ndarray, predicted: np.ndarray) -> dict[str, float]:
+    """MAE/MSE/RMSE/R2 plus MAPE and accuracy_pct = 100 - MAPE (floored at 0).
+
+    Forecasting is regression, so "accuracy" here is the mean percentage closeness to the actual value,
+    not a classification hit rate. MAPE is undefined when any actual value is zero.
+    """
+    actual, predicted = np.asarray(actual, dtype=float), np.asarray(predicted, dtype=float)
     r2 = float(r2_score(actual, predicted)) if len(actual) > 1 else float("nan")
+    mape = float(np.mean(np.abs((actual - predicted) / actual)) * 100) if np.all(actual != 0) else float("nan")
     return {"mae": float(mean_absolute_error(actual, predicted)), "mse": float(mean_squared_error(actual, predicted)),
-            "rmse": float(mean_squared_error(actual, predicted) ** 0.5), "r2": r2}
+            "rmse": float(mean_squared_error(actual, predicted) ** 0.5), "r2": r2,
+            "mape": mape, "accuracy_pct": max(0.0, 100.0 - mape) if np.isfinite(mape) else float("nan")}
 
 
 def save_comparison_bars(summary: pd.DataFrame, output: Path, unit: str) -> None:

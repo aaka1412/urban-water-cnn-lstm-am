@@ -5,7 +5,7 @@ analytics, dataset upload and validation, predictions, model comparison, validat
 confusion matrix, prediction history, CSV reports, the original rule-based chatbot, and a protected admin area.
 
 > **Read this first - what the project can and cannot do** (details in `docs/MODEL_PRESERVATION_REPORT.md`)
-> - The data is **32 two-month Kharghar billing totals** (APR-MAY2021 to JUN-JLY2026). The unit is shown as **QTY**; the project itself marks it as unconfirmed.
+> - The data is **32 two-month Kharghar billing totals** (APR-MAY2021 to JUN-JLY2026). The unit is shown as **Units**; the project itself marks it as unconfirmed.
 > - There are **four neural variants** (LSTM, CNN-LSTM, LSTM-Attention, CNN-LSTM-Attention) and **two baselines**, not three models.
 > - Only **`cnn_lstm_attention` has saved weights**, so it is the only model that can predict new data. The other three have walk-forward evaluation results only.
 > - **No training/validation loss curves were ever saved**, so none are shown.
@@ -20,8 +20,8 @@ confusion matrix, prediction history, CSV reports, the original rule-based chatb
 | Upload Dataset | Browse/drag a .csv or .xlsx, progress, validation report, column types, missing/duplicate/invalid counts, preview, confirmation step, upload history, delete |
 | Water Consumption Analytics | Trend with moving average, % change, season-by-year comparison, yearly totals, date-range filter |
 | Make Prediction | Pick dataset and horizon (1-6); genuine future forecast with measured error ranges; separate one-step backtest vs actual with an in-sample/held-out label; CSV export |
-| Model Comparison | Sortable table of all 6 models (marks which have saved weights), RMSE / MAE / R2 charts, error-by-horizon, actual vs predicted (any model), residuals |
-| Training and Validation | Training facts, in-sample fit, test results, tuning trials, honest "not recorded" notices, and a validation panel with Passed / Warning / Failed / Not evaluated checks |
+| Model Comparison | Sortable table of all 6 models (marks which have saved weights), RMSE / MAE / R2 / accuracy, charts, error-by-horizon, actual vs predicted (any model), residuals |
+| Training and Validation | Training facts and accuracy, learning curves (training vs validation loss), test results, train vs validation vs test accuracy with an overfitting check, 5-fold time-series cross-validation (per fold and mean ± std), residual analysis, tuning trials, and a validation panel with Passed / Warning / Failed / Not evaluated checks |
 | Confusion Matrix | Derived low/normal/high matrix, accuracy, precision/recall/F1, majority-class baseline, configurable quantiles |
 | Prediction History, Reports | Saved predictions, details, CSV downloads (model metrics, walk-forward predictions, validation summary) |
 | Chatbot | The original chatbot UI, unchanged, at `/chatbot` |
@@ -127,8 +127,11 @@ To run only the original chatbot API as before: `python -m uvicorn api.main:app 
 
 ## How to read the metrics
 
-- **RMSE / MAE** are in the data's unit (QTY); lower is better. RMSE punishes big misses more.
+- **RMSE / MAE** are in the data's unit (Units); lower is better. RMSE punishes big misses more.
 - **MSE** is RMSE squared. **MAPE** is the average error as a percentage of the actual value.
+- **Accuracy %** = 100 − MAPE: how close, on average, a forecast is to the actual bill (98% = off by 2% on average). It is a regression accuracy, not a classification hit rate.
+- **Training vs testing accuracy**: training accuracy is measured on bills the model learned from, testing accuracy on bills it never saw. A gap above 5 points is flagged as possible overfitting.
+- **5-fold time-series cross-validation**: the series is split into 5 consecutive test blocks; each fold trains on every bill before its block and tests on the block. Results are reported per fold and as mean ± std. The data is never shuffled (a shuffled k-fold would let the model learn from future bills).
 - **R2**: 1 is perfect; **below 0 means worse than predicting the average of the test bills**. All models are currently below 0.
 - **Walk-forward**: each test bill is predicted by a model trained only on earlier bills; this is the honest accuracy.
 - **In-sample**: errors on bills the model was trained on; optimistic, shown only with a label.
@@ -185,7 +188,8 @@ An end-to-end, reproducible implementation of the Stage-I project: daily urban w
 These rules keep reported accuracy honest; `tests/test_evaluation.py` checks them.
 
 - **No test data in training decisions.** Early stopping uses the most recent *training* windows; the model is then refit on all training windows for the chosen number of epochs. Test points are only predicted, once.
-- **Equal tuning.** All four variants get the same number of Optuna trials, on data that ends before the first test point, and each searches only the settings it uses.
+- **Equal tuning.** All four variants get the same number of Optuna trials, on data that ends before the first test point, and each searches only the settings it uses. Each trial is scored by `--cv-folds` (default 5) time-series cross-validation.
+- **Time-series k-fold cross-validation.** Kharghar runs also evaluate every variant with `--cv-folds` expanding-window folds (train on all earlier bills, test on the next block), recording train, validation (early-stopping windows) and test scores per fold. The hyperparameters were tuned on bills that overlap the later CV test blocks, so the walk-forward result remains the primary unbiased test; the CV shows how stable the models are across periods.
 - **Walk-forward testing.** Kharghar: each of the last `--test-periods` bills is forecast by models trained only on earlier bills. Daily: the last `--test-fraction` of days is split into `--folds` consecutive blocks, each forecast by models trained only on earlier days. Every neural model is repeated over `--runs` seeds; `mae_run_std` shows the seed-to-seed spread.
 - **No future information in preprocessing.** Gaps take the previous value, clip limits come from training data, smoothing is causal and only applied to model inputs. Forecasts are scored against raw observed values.
 - **Baselines.** `rel_mae` is MAE divided by the MAE of repeating the last value on the same test points (below 1 = better). MASE uses the in-sample naive error as its scale; on Kharghar that scale is inflated by the `DEC-JAN2024` spike, so prefer `rel_mae` there.
@@ -227,11 +231,11 @@ python chatbot.py
 
 The default Kharghar run tunes each variant with 10 trials, tests the last 8 bills walk-forward with 3 seeds, and also scores forecasts 2 and 3 bills ahead (`--horizon`). After training, `python chatbot.py` automatically loads the latest run. You can also pass `--run outputs\\kharghar_<timestamp>` to choose a specific run. Ask `next billing cycle`, `forecast 2 periods`, `average last 6 periods`, `highest period`, `accuracy`, or `help`.
 
-The run saves a forecast for the next billing period in `forecast_next_period.csv`, alongside walk-forward metrics and plots under `outputs/kharghar_<timestamp>/`. The default six-step window uses about one year of history. There are only 32 complete periods, so treat the forecast as exploratory. `QTY` units have not been confirmed; one period (`DEC-JAN2024`) also has a notably larger total than the others and should be checked before relying on its forecast.
+The run saves a forecast for the next billing period in `forecast_next_period.csv`, alongside walk-forward metrics and plots under `outputs/kharghar_<timestamp>/`. The default six-step window uses about one year of history. There are only 32 complete periods, so treat the forecast as exploratory. The physical unit behind `Units` has not been confirmed; one period (`DEC-JAN2024`) also has a notably larger total than the others and should be checked before relying on its forecast.
 
 ## Expected output
 
-Each run creates `metrics.csv` (neural models and baselines, next step), `walk_forward_predictions.csv`, `trial_history.csv` (all variants), `best_hyperparameters.json` (per variant), `config.json`, `model_bundle.json`, and plots in an isolated timestamped folder; Kharghar runs add `horizon_metrics.csv` and `horizon_comparison.png`. The console ends with a verdict comparing the best neural model with the best baseline. Results on the generated synthetic dataset validate execution only; they are not evidence of real-world forecasting accuracy.
+Each run creates `metrics.csv` (neural models and baselines, next step), `walk_forward_predictions.csv`, `trial_history.csv` (all variants), `best_hyperparameters.json` (per variant), `config.json`, `model_bundle.json`, and plots in an isolated timestamped folder; Kharghar runs add `horizon_metrics.csv` and `horizon_comparison.png`, plus the validation outputs: `cv_folds.csv` / `cv_summary.csv` / `cv_folds.png` (k-fold cross-validation), `train_test_accuracy.csv` / `.png` (training vs validation vs testing accuracy), `learning_curves.csv` / `.png` (loss per epoch) and `residual_diagnostics.csv` / `residuals.png`. The console ends with a verdict comparing the best neural model with the best baseline. Results on the generated synthetic dataset validate execution only; they are not evidence of real-world forecasting accuracy.
 
 ## Design notes
 

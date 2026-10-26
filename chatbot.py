@@ -257,11 +257,11 @@ DATASET_GUIDE = """What dataset I need for Navi Mumbai:
 """
 
 PERIOD_HELP = """I can answer questions about Kharghar billing-period totals:
-  forecast / next billing cycle       -> estimate the next two-month total QTY
+  forecast / next billing cycle       -> estimate the next two-month total (Units)
   forecast 2 periods                  -> estimate the next two billing periods
   average last 6 periods              -> average of recent period totals
   last period / last 4 periods        -> show recent recorded totals
-  highest / lowest                    -> period with max/min total QTY
+  highest / lowest                    -> period with max/min total (Units)
   accuracy                            -> holdout test metrics for this run
   graph last 6 periods                -> save a chart of recent totals
   plot forecast 2 periods             -> save a chart with future estimates
@@ -293,13 +293,13 @@ Har bill lagbhag do mahine ka hota hai, isliye sirf ek mahine ka anuman nahi ho 
 """
 
 
-PERIOD_DATASET_GUIDE = """This Kharghar model uses one total QTY for each complete two-month billing period.
-The totals were formed by adding customers' QTY rows for the period. The source unit for QTY
+PERIOD_DATASET_GUIDE = """This Kharghar model uses one total consumption figure (in Units) for each complete two-month billing period.
+The totals were formed by adding every customer's Units for the period. The physical unit behind Units
 has not yet been confirmed. Ask 'next billing cycle' for the model's next-period estimate.
 """
 
-PERIOD_DATASET_GUIDE_HI = """Yeh Kharghar model har poore do-mahine ke bill ka ek total QTY use karta hai.
-Yeh total us period ke sabhi customers ki QTY jod kar banaya gaya hai. QTY ki unit abhi confirm
+PERIOD_DATASET_GUIDE_HI = """Yeh Kharghar model har poore do-mahine ke bill ka ek total consumption (Units mein) use karta hai.
+Yeh total us period ke sabhi customers ke Units jod kar banaya gaya hai. Units ki asli unit (litre ya m³) abhi confirm
 nahi hai. Agle bill ka anuman jaanne ke liye 'agla bill' poochiye.
 """
 
@@ -707,10 +707,10 @@ def graph_reply(ctx: ChatContext, kind: str, result: GraphResult, open_file: boo
 
 
 def _short_value(value: float, unit: str) -> str:
-    """Compact value for chart labels: QTY in lakh, everything else with one decimal."""
-    if unit == "QTY" and abs(value) >= 1e5:
+    """Compact value for chart labels: Units in lakh, everything else with one decimal."""
+    if unit == "Units" and abs(value) >= 1e5:
         return f"{value / 1e5:.2f} lakh"
-    if unit == "QTY":
+    if unit == "Units":
         return f"{value:,.0f}"
     return f"{value:,.1f}"
 
@@ -759,7 +759,7 @@ def draw_rmse_bars(metrics: pd.DataFrame, out: Path, unit: str) -> None:
     bars = ax.bar(rmse.index, rmse.values, color=colors)
     ax.bar_label(bars, labels=[_short_value(v, unit) for v in rmse.values], padding=3, fontsize=9)
     ax.set(title="Test RMSE by model (shorter = better; green = best, grey = simple baseline)", xlabel="Model",
-           ylabel=f"RMSE ({'QTY' if unit == 'QTY' else 'm³'})")
+           ylabel=f"RMSE ({'Units' if unit == 'Units' else 'm³'})")
     ax.yaxis.set_major_formatter(FuncFormatter(lambda value, _: f"{value:,.0f}"))
     ax.margins(y=0.15)
     ax.tick_params(axis="x", rotation=25)
@@ -825,7 +825,7 @@ def plot_model_comparison(metrics: pd.DataFrame, run_dir: Path, unit: str = "m3"
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / "model_comparison.png"
     draw_rmse_bars(metrics, out, unit)
-    decimals = 2 if unit == "QTY" else 1
+    decimals = 2 if unit == "Units" else 1
     return out, lambda lang: describe_model_comparison(metrics, unit, decimals, lang)
 
 
@@ -864,40 +864,40 @@ def do_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int, l
             (start, end, label), value = periods[0], float(forecasts[0])
             change = value - last_value
             lines = [
-                f"Agle bill ({label}, {_span(start, end)}) mein lagbhag {_num(value)} QTY ka anuman hai"
+                f"Agle bill ({label}, {_span(start, end)}) mein lagbhag {_num(value)} Units ka anuman hai"
                 f"{band(1, value, True)}.",
-                f"Pichla recorded bill {last_label} = {_num(last_value)} QTY tha, "
+                f"Pichla recorded bill {last_label} = {_num(last_value)} Units tha, "
                 f"yaani {_num(change, True)}{_pct_text(change, last_value)} ka badlav.",
                 "",
             ]
             if err1 is not None:
-                lines.append(f"Range = anuman ± model ki average test galti ({_num(err1)} QTY).")
-            lines.append("Yeh model ka anuman hai, asli reading nahi. QTY ki unit abhi confirm nahi hai.")
+                lines.append(f"Range = anuman ± model ki average test galti ({_num(err1)} Units).")
+            lines.append("Yeh model ka anuman hai, asli reading nahi. Units ki asli unit (litre ya m³) abhi confirm nahi hai.")
             return "\n".join(lines)
-        lines = [f"Pichla recorded bill: {last_label} = {_num(last_value)} QTY."]
+        lines = [f"Pichla recorded bill: {last_label} = {_num(last_value)} Units."]
         for step, ((start, end, label), value) in enumerate(zip(periods, forecasts), 1):
-            lines.append(f"  {label} ({_span(start, end)}): lagbhag {_num(float(value))} QTY{band(step, float(value), True)}")
-        lines.append("Range = anuman ± model ki us doori par average test galti. QTY ki unit abhi confirm nahi hai.")
+            lines.append(f"  {label} ({_span(start, end)}): lagbhag {_num(float(value))} Units{band(step, float(value), True)}")
+        lines.append("Range = anuman ± model ki us doori par average test galti. Units ki asli unit (litre ya m³) abhi confirm nahi hai.")
         return "\n".join(lines)
     if count == 1:
         (start, end, label), value = periods[0], float(forecasts[0])
         change = value - last_value
         lines = [
-            f"The next billing period, {label} ({_span(start, end)}), is forecast at about {_num(value)} QTY"
+            f"The next billing period, {label} ({_span(start, end)}), is forecast at about {_num(value)} Units"
             + (f", likely between {_num(value - err1)} and {_num(value + err1)}." if err1 is not None else "."),
             f"That is {_num(change, True)}{_pct_text(change, last_value)} compared with the last recorded bill "
-            f"({last_label} = {_num(last_value)} QTY).",
+            f"({last_label} = {_num(last_value)} Units).",
             "",
         ]
         if err1 is not None:
-            lines.append(f"The range is the estimate ± the model's average test error ({_num(err1)} QTY).")
-        lines.append("This is a model estimate, not a meter reading; QTY's source unit is unconfirmed.")
+            lines.append(f"The range is the estimate ± the model's average test error ({_num(err1)} Units).")
+        lines.append("This is a model estimate, not a meter reading; the physical unit behind Units is unconfirmed.")
         return "\n".join(lines)
-    lines = [f"Last recorded period: {last_label} = {_num(last_value)} QTY."]
+    lines = [f"Last recorded period: {last_label} = {_num(last_value)} Units."]
     for step, ((start, end, label), value) in enumerate(zip(periods, forecasts), 1):
-        lines.append(f"  {label} ({_span(start, end)}): {_num(float(value))} QTY{band(step, float(value), False)}")
+        lines.append(f"  {label} ({_span(start, end)}): {_num(float(value))} Units{band(step, float(value), False)}")
     lines.append("Ranges are the estimate ± the model's average test error at that distance ahead. "
-                 "QTY's source unit is unconfirmed.")
+                 "the physical unit behind Units is unconfirmed.")
     return "\n".join(lines)
 
 
@@ -912,23 +912,23 @@ def explain_period_forecast(model, scaler, meta, history: pd.DataFrame, metrics:
         _t(lang, "This is a model estimate, not a meter reading.", "Yeh model ka anuman hai, meter reading nahi."),
         _t(lang, f"The {variant} model looks at the last {seq_len} billing periods and estimates the next period.",
            f"{variant} model pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
-        _t(lang, f"Next period ({next_label}) estimate: {value} QTY.",
-           f"Agle bill ({next_label}) ka anuman: lagbhag {value} QTY."),
+        _t(lang, f"Next period ({next_label}) estimate: {value} Units.",
+           f"Agle bill ({next_label}) ka anuman: lagbhag {value} Units."),
     ]
     err = forecast_error(meta, 1)
     if err is not None:
         low, high = _num(float(forecast) - err), _num(float(forecast) + err)
         lines.append(_t(lang,
-                        f"Likely range: {low} – {high}. In past tests the model was off by about {_num(err)} QTY "
+                        f"Likely range: {low} – {high}. In past tests the model was off by about {_num(err)} Units "
                         "on average, so a real bill anywhere in that range would be normal.",
-                        f"Andaazan range: {low} se {high}. Pichle tests mein model average {_num(err)} QTY "
+                        f"Andaazan range: {low} se {high}. Pichle tests mein model average {_num(err)} Units "
                         "se chooka tha, isliye is range mein koi bhi asli bill normal hoga."))
     lines += [
-        _t(lang, "Each period covers about two months. The source unit for QTY has not been confirmed.",
-           "Har bill lagbhag do mahine ka hota hai. QTY ki unit abhi confirm nahi hai."),
+        _t(lang, "Each period covers about two months. The physical unit behind Units has not been confirmed.",
+           "Har bill lagbhag do mahine ka hota hai. Units ki asli unit (litre ya m³) abhi confirm nahi hai."),
     ]
     if metrics is not None and not metrics.empty:
-        lines.append(accuracy_text(metrics, meta, "QTY", 2, lang))
+        lines.append(accuracy_text(metrics, meta, "Units", 2, lang))
     return "\n".join(lines)
 
 
@@ -936,8 +936,8 @@ def explain_period_model(meta: dict, run_dir: Path, metrics: pd.DataFrame | None
     seq_len = int(meta.get("sequence_length", 6))
     variant = meta.get("variant", "cnn_lstm_attention")
     lines = [
-        _t(lang, "This model is trained on Kharghar's combined customer QTY per two-month billing period.",
-           "Yeh model Kharghar ke sabhi customers ki do-mahine ki total QTY par train hua hai."),
+        _t(lang, "This model is trained on Kharghar's combined customer Units per two-month billing period.",
+           "Yeh model Kharghar ke sabhi customers ke do-mahine ke total Units par train hua hai."),
         _t(lang, f"It uses the last {seq_len} periods to estimate the next period.",
            f"Yeh pichle {seq_len} bills dekh kar agle bill ka anuman lagata hai."),
         _t(lang, f"The saved network is {variant} (file {run_dir.name}/{weights_file(run_dir).name}).",
@@ -946,7 +946,7 @@ def explain_period_model(meta: dict, run_dir: Path, metrics: pd.DataFrame | None
            "Yeh walk-forward test mein sabse kam galti wala neural model tha; ek step matlab ek bill (do mahine)."),
     ]
     if metrics is not None and not metrics.empty:
-        lines.append(accuracy_text(metrics, meta, "QTY", 2, lang))
+        lines.append(accuracy_text(metrics, meta, "Units", 2, lang))
     lines.append(_t(lang, "There are few periods, so treat forecasts as exploratory.",
                     "Data mein bills kam hain, isliye anuman ko sirf andaaza maanein."))
     return "\n".join(lines)
@@ -961,10 +961,10 @@ def plot_period_history(history: pd.DataFrame, count: int, run_dir: Path) -> Gra
     plt.style.use("seaborn-v0_8-whitegrid")
     fig, axis = plt.subplots(figsize=(10, 4.5))
     axis.plot(tail["date"], tail["supply_m3"], marker="o", linewidth=1.8, color="#1f77b4")
-    mark_high_low(axis, tail["date"], tail["supply_m3"], "QTY")
+    mark_high_low(axis, tail["date"], tail["supply_m3"], "Units")
     lakh_axis(axis)
-    axis.set(title=f"Kharghar total QTY — last {count} billing periods",
-             ylabel="Total QTY in lakh (source unit unconfirmed)", xlabel="Billing period")
+    axis.set(title=f"Kharghar total consumption (Units) — last {count} billing periods",
+             ylabel="Total Units in lakh (source unit unconfirmed)", xlabel="Billing period")
     axis.set_xticks(tail["date"], tail["billing_period"], rotation=35, ha="right")
     if count >= 2:
         axis.legend(loc="best")
@@ -972,7 +972,7 @@ def plot_period_history(history: pd.DataFrame, count: int, run_dir: Path) -> Gra
     fig.savefig(out, dpi=160)
     plt.close(fig)
     values, labels = tail["supply_m3"].to_list(), tail["billing_period"].to_list()
-    return out, lambda lang: describe_trend(values, labels, "QTY", "billing periods", 2, lang)
+    return out, lambda lang: describe_trend(values, labels, "Units", "billing periods", 2, lang)
 
 
 def plot_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int,
@@ -992,11 +992,11 @@ def plot_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int,
     axis.plot(x[:len(tail)], values[:len(tail)], marker="o", label="Recorded total", color="black")
     axis.plot(x[len(tail)-1:], values[len(tail)-1:], marker="s", label="Forecast", color="#d62728")
     axis.axvline(len(tail) - 0.5, color="gray", linestyle=":", alpha=0.8)
-    mark_high_low(axis, x[:len(tail)], values[:len(tail)], "QTY")
-    label_forecast_points(axis, x[len(tail):], values[len(tail):], "QTY")
+    mark_high_low(axis, x[:len(tail)], values[:len(tail)], "Units")
+    label_forecast_points(axis, x[len(tail):], values[len(tail):], "Units")
     lakh_axis(axis)
-    axis.set(title="Kharghar total QTY by billing period",
-             ylabel="Total QTY in lakh (source unit unconfirmed)", xlabel="Billing period")
+    axis.set(title="Kharghar total consumption (Units) by billing period",
+             ylabel="Total Units in lakh (source unit unconfirmed)", xlabel="Billing period")
     axis.set_xticks(x, labels, rotation=35, ha="right")
     axis.legend(loc="best")
     fig.tight_layout()
@@ -1004,7 +1004,7 @@ def plot_period_forecast(model, scaler, meta, history: pd.DataFrame, count: int,
     plt.close(fig)
     last_label, last_value = history["billing_period"].iloc[-1], float(history["supply_m3"].iloc[-1])
     future_labels = [item[2] for item in future]
-    return out, lambda lang: describe_forecast(last_label, last_value, future_labels, forecasts, "QTY", 2,
+    return out, lambda lang: describe_forecast(last_label, last_value, future_labels, forecasts, "Units", 2,
                                                metrics, lang)
 
 
@@ -1071,8 +1071,8 @@ def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, l
             return result
         label, value, kind = result
         if kind == "recorded":
-            return _t(lang, f"Recorded total for {label}: {_num(value)} QTY{assumed_year}.",
-                      f"{label} ka recorded total: {_fmt(value, lang, 2)} QTY{assumed_year}.")
+            return _t(lang, f"Recorded total for {label}: {_num(value)} Units{assumed_year}.",
+                      f"{label} ka recorded total: {_fmt(value, lang, 2)} Units{assumed_year}.")
         steps = month_offset // 2 + 1
         if ctx is not None:
             ctx.last_forecast_days = min(12, steps)
@@ -1095,17 +1095,17 @@ def answer_named_period(text: str, model, scaler, meta, history: pd.DataFrame, l
         return "\n".join([
             f"{requested_label} Kharghar ka koi billing period nahi hai{assumed_year}.",
             f"Bills {label_a[:7]} aur {label_b[:7]} ke hote hain, isliye yeh do mahine do alag bills mein aate hain:",
-            f"  {label_a} ({kind_hi[kind_a]}): {_fmt(value_a, lang, 2)} QTY",
-            f"  {label_b} ({kind_hi[kind_b]}): {_fmt(value_b, lang, 2)} QTY",
-            f"{requested_label} ka rough anuman: lagbhag {_fmt(estimate, lang, 2)} QTY "
+            f"  {label_a} ({kind_hi[kind_a]}): {_fmt(value_a, lang, 2)} Units",
+            f"  {label_b} ({kind_hi[kind_b]}): {_fmt(value_b, lang, 2)} Units",
+            f"{requested_label} ka rough anuman: lagbhag {_fmt(estimate, lang, 2)} Units "
             "(dono bills ka aadha, yeh maan kar ki har bill ka paani dono mahino mein barabar bata hai).",
         ])
     return "\n".join([
         f"{requested_label} is not one of Kharghar's billing periods{assumed_year}.",
         f"Bills cover {label_a[:7]} and {label_b[:7]}, so these two months fall in two different bills:",
-        f"  {label_a} ({kind_a}): {_num(value_a)} QTY",
-        f"  {label_b} ({kind_b}): {_num(value_b)} QTY",
-        f"Rough {requested_label} estimate: about {_num(estimate)} QTY "
+        f"  {label_a} ({kind_a}): {_num(value_a)} Units",
+        f"  {label_b} ({kind_b}): {_num(value_b)} Units",
+        f"Rough {requested_label} estimate: about {_num(estimate)} Units "
         "(half of each bill, assuming use is spread evenly over each bill's two months).",
     ])
 
@@ -1124,13 +1124,13 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
     if wants_trend(t) and not wants_graph(t):
         nums = [int(value) for value in re.findall(r"\d+", t)]
         tail = history.tail(max(1, min(len(history), nums[0] if nums else 6)))
-        return describe_trend(tail["supply_m3"], tail["billing_period"], "QTY", "billing periods", 2, lang), ctx
+        return describe_trend(tail["supply_m3"], tail["billing_period"], "Units", "billing periods", 2, lang), ctx
     if wants_graph(t):
         nums = [int(value) for value in re.findall(r"\d+", t)]
         if "comparison" in t or "metric" in t or "model" in t or "accuracy" in t:
             if metrics is None:
                 return _t(lang, "No metrics.csv in this run.", "Is run mein metrics.csv nahi hai."), ctx
-            return graph_reply(ctx, "graph_metrics", plot_model_comparison(metrics, run_dir, "QTY"), open_graph)
+            return graph_reply(ctx, "graph_metrics", plot_model_comparison(metrics, run_dir, "Units"), open_graph)
         if any(w in t for w in ("forecast", "predict", "next", "agla", "agle", "anuman")):
             ctx.last_forecast_days = max(1, min(12, nums[0] if nums else 1))
             return graph_reply(ctx, "graph_forecast", plot_period_forecast(
@@ -1146,13 +1146,13 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
         if metrics is None or metrics.empty:
             return _t(lang, "No metrics.csv in this run.", "Is run mein metrics.csv nahi hai."), ctx
         ctx.last_topic = "metrics"
-        return accuracy_text(metrics, meta, "QTY", 2, lang), ctx
+        return accuracy_text(metrics, meta, "Units", 2, lang), ctx
     if wants_explanation(t):
         if any(w in t for w in ("forecast", "next", "cycle", "agla", "agle", "anuman")) or ctx.last_topic == "forecast":
             return explain_period_forecast(model, scaler, meta, history, metrics, lang), ctx
         if ctx.last_topic == "average":
-            return _t(lang, "That is the average total QTY per two-month billing period, not per day or per month.",
-                      "Yeh ek do-mahine ke bill ka average total QTY hai, roz ya mahine ka nahi."), ctx
+            return _t(lang, "That is the average total (in Units) per two-month billing period, not per day or per month.",
+                      "Yeh ek do-mahine ke bill ka average total (Units mein) hai, roz ya mahine ka nahi."), ctx
         if ctx.last_topic in {"peak", "lowest"}:
             return _t(lang, "That is the highest or lowest recorded period total, not a forecast.",
                       "Yeh sabse zyada ya sabse kam recorded bill ka total hai, anuman nahi."), ctx
@@ -1184,27 +1184,27 @@ def answer_period(text: str, model, scaler, meta, history, metrics, run_dir, ctx
         count = max(1, min(len(history), numbers[0] if numbers else 6))
         avg = _fmt(float(history.tail(count)["supply_m3"].mean()), lang, 2)
         ctx.last_topic = "average"
-        return _t(lang, f"Average total for the last {count} billing periods: {avg} QTY.",
-                  f"Pichle {count} bills ka average total: {avg} QTY."), ctx
+        return _t(lang, f"Average total for the last {count} billing periods: {avg} Units.",
+                  f"Pichle {count} bills ka average total: {avg} Units."), ctx
     if any(word in t for word in ("highest", "peak", "maximum", "max", "sabse zyada", "sabse jyada")):
         row = history.loc[history["supply_m3"].idxmax()]
         ctx.last_topic = "peak"
         value = _fmt(float(row["supply_m3"]), lang, 2)
-        return _t(lang, f"Highest recorded period total: {row['billing_period']} = {value} QTY.",
-                  f"Sabse zyada recorded bill: {row['billing_period']} = {value} QTY."), ctx
+        return _t(lang, f"Highest recorded period total: {row['billing_period']} = {value} Units.",
+                  f"Sabse zyada recorded bill: {row['billing_period']} = {value} Units."), ctx
     if any(word in t for word in ("lowest", "minimum", "min", "least", "sabse kam")):
         row = history.loc[history["supply_m3"].idxmin()]
         ctx.last_topic = "lowest"
         value = _fmt(float(row["supply_m3"]), lang, 2)
-        return _t(lang, f"Lowest recorded period total: {row['billing_period']} = {value} QTY.",
-                  f"Sabse kam recorded bill: {row['billing_period']} = {value} QTY."), ctx
+        return _t(lang, f"Lowest recorded period total: {row['billing_period']} = {value} Units.",
+                  f"Sabse kam recorded bill: {row['billing_period']} = {value} Units."), ctx
     if any(word in t for word in ("last", "recent", "pichla", "pichle")):
         numbers = [int(value) for value in re.findall(r"\d+", t)]
         count = max(1, min(len(history), numbers[0] if numbers else 1))
         selected = history.tail(count)
         ctx.last_topic, ctx.last_n = "recent", count
         lines = [_t(lang, "Recent billing-period totals:", "Haal ke bills ke total:")]
-        lines.extend(f"  {row.billing_period}: {_fmt(float(row.supply_m3), lang, 2)} QTY" for row in selected.itertuples())
+        lines.extend(f"  {row.billing_period}: {_fmt(float(row.supply_m3), lang, 2)} Units" for row in selected.itertuples())
         return "\n".join(lines), ctx
     if "hello" in t or t == "hi" or "namaste" in t:
         return _t(lang, "Hi. Try 'next billing cycle', 'average last 6 periods', 'highest period', or 'help'.",

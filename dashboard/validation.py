@@ -141,7 +141,7 @@ def validate_frame(frame: pd.DataFrame, sequence_length: int, train_min: float |
         outside = int(((valid < train_min) | (valid > train_max)).sum())
         if outside:
             warnings.append(f"{outside} value(s) lie outside the range the model was trained on "
-                            f"({train_min:,.0f} to {train_max:,.0f} QTY). Predictions may be unreliable.")
+                            f"({train_min:,.0f} to {train_max:,.0f} Units). Predictions may be unreliable.")
             checks.append(_check("Similar to training data", "warning", warnings[-1]))
         else:
             checks.append(_check("Similar to training data", "passed", "All values fall inside the training range."))

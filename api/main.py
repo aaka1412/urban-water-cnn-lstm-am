@@ -170,7 +170,7 @@ def _forecast_points(bundle: dict, count: int) -> dict:
         "lower": [v - e for v, e in zip(values, errors)] if has_range else None,
         "upper": [v + e for v, e in zip(values, errors)] if has_range else None,
         "last_label": last_label, "last_value": float(history["supply_m3"].iloc[-1]),
-        "unit": "QTY" if billing else "m3",
+        "unit": "Units" if billing else "m3",
     }
 
 
@@ -191,7 +191,7 @@ def _build_chart(bundle: dict, ctx: bot.ChatContext) -> dict | None:
         return None
     meta, history, metrics = bundle["meta"], bundle["history"], bundle["metrics"]
     billing = meta.get("data_frequency") == "two_month_billing_period"
-    unit = "QTY" if billing else "m3"
+    unit = "Units" if billing else "m3"
     try:
         if kind == "graph_metrics":
             if metrics is None or metrics.empty:
@@ -240,7 +240,7 @@ def _build_chart(bundle: dict, ctx: bot.ChatContext) -> dict | None:
 
 # ---------------------------------------------------------------- markdown
 _CMD_LINE = re.compile(r"^\s{2,}(.+?)\s{2,}->\s+(.+)$")
-_NUM_UNIT = re.compile(r"(?<![\w*])([+-]?\d[\d,]*(?:\.\d+)?(?: lakh)? (?:QTY|m3(?:/day)?))")
+_NUM_UNIT = re.compile(r"(?<![\w*])([+-]?\d[\d,]*(?:\.\d+)?(?: lakh)? (?:Units|m3(?:/day)?))")
 
 
 MODEL_NAMES = {
@@ -341,7 +341,7 @@ def api_history(run_id: str | None = None, count: int = Query(8, ge=1, le=365)) 
     rid, bundle = _load_run(run_id)
     billing = bundle["meta"].get("data_frequency") == "two_month_billing_period"
     pts = _history_points(bundle["history"], count, billing)
-    return {"run_id": rid, "unit": "QTY" if billing else "m3", **pts}
+    return {"run_id": rid, "unit": "Units" if billing else "m3", **pts}
 
 
 @app.get("/api/forecast")

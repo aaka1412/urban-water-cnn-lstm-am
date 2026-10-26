@@ -119,33 +119,54 @@ def test_model_catalog_marks_weights_and_matches_saved_metrics(client):
     cat = client.get("/api/models/catalog?metric=rmse", headers=h).json()
     by = {m["key"]: m for m in cat["models"]}
     assert set(by) == {"cnn_lstm_attention", "cnn_lstm", "lstm_attention", "lstm", "naive_last_value", "seasonal_naive_6"}
-    assert [k for k, m in by.items() if m["has_saved_weights"]] == ["cnn_lstm_attention"]
     run = service.resolve_run_dir()
+    deployed = json.loads((run / "model_bundle.json").read_text())["variant"]
+    assert [k for k, m in by.items() if m["has_saved_weights"]] == [deployed]
     saved = pd.read_csv(run / "metrics.csv").set_index("model")
     for k, m in by.items():
         assert m["rmse"] == pytest.approx(saved.loc[k, "rmse"], rel=1e-9)
         assert m["mae"] == pytest.approx(saved.loc[k, "mae"], rel=1e-9)
         assert m["r2"] == pytest.approx(saved.loc[k, "r2"], rel=1e-9)
         assert m["mse"] == pytest.approx(saved.loc[k, "rmse"] ** 2, rel=1e-9)
+        assert m["accuracy"] == pytest.approx(100 - m["mape"], rel=1e-12)
     assert cat["best"]["key"] == min(by, key=lambda k: by[k]["rmse"])
     assert client.get("/api/models/catalog?metric=r2", headers=h).json()["best"]["key"] == max(by, key=lambda k: by[k]["r2"])
 
 
-def test_training_view_does_not_fabricate_loss_curves(client):
+def test_training_view_shows_only_recorded_loss_curves_and_cv(client):
     h = make_user(client, "ivy")
     t = client.get("/api/models/training", headers=h).json()
-    assert t["loss_history"]["recorded"] is False
-    assert t["validation"]["loss_recorded"] is False
-    assert "epochs" in json.dumps(t["training"]["final_training_epochs"]) or t["training"]["final_training_epochs"] == 22
+    run = service.resolve_run_dir()
+    has_curves = (run / "learning_curves.csv").exists()
+    assert t["loss_history"]["recorded"] is has_curves and t["validation"]["loss_recorded"] is has_curves
+    meta = json.loads((run / "model_bundle.json").read_text())
+    assert t["training"]["final_training_epochs"] == meta["evaluation"]["final_training_epochs"]
+    if has_curves:  # the final curve is exactly what the training script saved, nothing interpolated
+        curves = pd.read_csv(run / "learning_curves.csv")
+        final = curves[curves["fold"].astype(str) == "final"]
+        assert t["loss_history"]["final"]["train_loss"] == pytest.approx(final["train_loss"].tolist())
+        assert t["loss_history"]["best_epoch"] == meta["evaluation"]["final_training_epochs"]
+    cv = t["cross_validation"]
+    assert cv["recorded"] is (run / "cv_summary.csv").exists()
+    if cv["recorded"]:
+        assert cv["n_folds"] == 5 and len(cv["folds"]) == 5
+        assert all(a["train_bills"] < b["train_bills"] for a, b in zip(cv["folds"], cv["folds"][1:]))  # expanding
+        saved = pd.read_csv(run / "train_test_accuracy.csv").set_index("model")
+        for row in cv["accuracy"]:
+            assert row["cv_test_accuracy"] == pytest.approx(saved.loc[row["model"], "cv_test_accuracy"])
 
 
 def test_validation_panel_has_honest_statuses(client):
     h = make_user(client, "jack")
     p = client.get("/api/models/validation", headers=h).json()
     st = {c["name"]: c["status"] for c in p["checks"]}
-    assert st["Training/validation loss history"] == "not_evaluated"
+    run = service.resolve_run_dir()
+    assert st["Training/validation loss history"] == ("passed" if (run / "learning_curves.csv").exists()
+                                                      else "not_evaluated")
     assert st["Saved forecast is reproduced"] == "passed"
     assert st["R-squared on test bills"] == "warning"       # real R2 is negative
+    assert st.get("5-fold cross-validation stability") in (("passed", "warning")
+                                                            if (run / "cv_summary.csv").exists() else (None,))
     assert p["overall"] == "warning"
 
 
@@ -365,4 +386,5 @@ def test_overview_cards_come_from_real_data(client):
     df = original()
     assert o["stats"]["records"] == len(df) and o["stats"]["total"] == pytest.approx(df["total_qty"].sum())
     assert o["stats"]["max"] == df["total_qty"].max() and o["stats"]["latest_label"] == df["billing_period"].iloc[-1]
-    assert o["best_model"]["label"] == "CNN-LSTM + Attention"
+    saved = pd.read_csv(service.resolve_run_dir() / "metrics.csv")
+    assert o["best_model"]["label"] == service.MODELS[saved.loc[saved["rmse"].idxmin(), "model"]][0]

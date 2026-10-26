@@ -8,15 +8,15 @@ from .training import ModelParams, train_model
 
 
 def tune_variant(variant: str, x: np.ndarray, y: np.ndarray, trials: int, epochs: int,
-                 seed: int) -> tuple[ModelParams, list[dict]]:
-    """Bayesian (TPE) search for one model variant, scored by chronological cross-validation.
+                 seed: int, n_splits: int = 5) -> tuple[ModelParams, list[dict]]:
+    """Bayesian (TPE) search for one model variant, scored by chronological (time-series) k-fold CV.
 
     x/y must end before the test period. Every variant gets the same trial budget and only searches
     the settings it actually uses (no CNN settings for LSTM, no attention settings without attention),
     so model comparisons reflect architecture rather than unequal tuning effort.
     """
     optuna.logging.set_verbosity(optuna.logging.WARNING)
-    splitter = TimeSeriesSplit(n_splits=2)
+    splitter = TimeSeriesSplit(n_splits=n_splits)
 
     def objective(trial: optuna.Trial) -> float:
         values = {

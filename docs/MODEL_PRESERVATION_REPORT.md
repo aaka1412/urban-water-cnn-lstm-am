@@ -37,7 +37,7 @@ This is four neural variants plus two baselines, not three models; all six are s
 - Reloaded model forecast for AUG-SEP2026 = 4,318,689.71, identical to the saved `forecast_next_period.csv` (difference 0.0).
 - Metrics recomputed from the saved walk-forward predictions match `metrics.csv` to about 1e-10 for all six models.
 
-## 5. Actual results (walk-forward, last 8 bills, unit QTY, unit not confirmed)
+## 5. Actual results (walk-forward, last 8 bills, in Units, physical unit not confirmed)
 | Model | RMSE | MAE | MSE | R2 | MAPE |
 |---|---|---|---|---|---|
 | CNN-LSTM + Attention (deployed) | 74,822.48 | 59,970.74 | 5.598e9 | -1.446 | 1.41% |

@@ -109,14 +109,15 @@ def regression_metrics(actual, predicted) -> dict:
     y, p = y[ok], p[ok]
     n = len(y)
     if n == 0:
-        return {"n": 0, "mae": None, "mse": None, "rmse": None, "r2": None, "mape": None}
+        return {"n": 0, "mae": None, "mse": None, "rmse": None, "r2": None, "mape": None, "accuracy": None}
     err = y - p
     mse = float(np.mean(err ** 2))
     ss_tot = float(np.sum((y - y.mean()) ** 2))
+    mape = float(np.mean(np.abs(err / y)) * 100) if np.all(y > 0) else None
     return {
         "n": n, "mae": float(np.mean(np.abs(err))), "mse": mse, "rmse": mse ** 0.5,
         "r2": (1 - float(np.sum(err ** 2)) / ss_tot) if n >= 2 and ss_tot > 0 else None,
-        "mape": float(np.mean(np.abs(err / y)) * 100) if np.all(y > 0) else None,
+        "mape": mape, "accuracy": max(0.0, 100 - mape) if mape is not None else None,  # regression accuracy % = 100 - MAPE
     }
 
 
@@ -160,7 +161,8 @@ def catalog() -> dict:
             "training_status": ("Final model trained on all periods; weights saved" if weights else
                                 "Rule-based, no training" if kind == "baseline" else
                                 "Trained per walk-forward fold; weights not saved"),
-            "evaluated_at": run_timestamp(run), "n_test_points": m["n"], **{k: m[k] for k in ("mae", "mse", "rmse", "r2", "mape")},
+            "evaluated_at": run_timestamp(run), "n_test_points": m["n"],
+            **{k: m[k] for k in ("mae", "mse", "rmse", "r2", "mape", "accuracy")},
             "rel_mae": float(row["rel_mae"]) if row is not None and "rel_mae" in row else None,
             "mase": float(row["mase"]) if row is not None and "mase" in row else None,
             "mae_run_std": float(row["mae_run_std"]) if row is not None and "mae_run_std" in row else None,
@@ -388,6 +390,50 @@ def confusion(model_key: str, q_low: float = 1 / 3, q_high: float = 2 / 3) -> di
     })
 
 
+def _loss_history(run: Path, deployed: str) -> dict:
+    """Per-epoch losses saved by the training script (learning_curves.csv), if this run recorded them."""
+    curves = _read(run, "learning_curves.csv")
+    if curves is None or curves.empty:
+        return {"recorded": False, "message": (
+            "Per-epoch training and validation loss were not saved by the training script for this run, so no loss "
+            "curves can be drawn. Nothing has been estimated or re-trained to fill the gap.")}
+    curves["fold"] = curves["fold"].astype(str)
+    final = curves[curves["fold"] == "final"].sort_values("epoch")
+    folds = curves[(curves["model"] == deployed) & (curves["fold"] != "final")]
+    per_fold = {fold: g.groupby("epoch")[["train_loss", "val_loss"]].mean().reset_index().to_dict("list")
+                for fold, g in folds.groupby("fold")}
+    best = final.loc[final["val_loss"].idxmin()] if len(final) and final["val_loss"].notna().any() else None
+    return {"recorded": True, "unit": "MSE on min-max scaled values",
+            "message": ("Training loss is the mean training-batch MSE per epoch; validation loss is the MSE on the "
+                        "most recent training windows held out for early stopping. Weights from the best "
+                        "validation epoch are kept."),
+            "final": final[["epoch", "train_loss", "val_loss"]].to_dict("list"),
+            "best_epoch": int(best["epoch"]) if best is not None else None, "folds": per_fold}
+
+
+def cross_validation_view(run: Path) -> dict:
+    """Time-series k-fold CV results (cv_summary.csv, cv_folds.csv, train_test_accuracy.csv) if recorded."""
+    summary, folds, acc = (_read(run, n) for n in ("cv_summary.csv", "cv_folds.csv", "train_test_accuracy.csv"))
+    if summary is None or folds is None:
+        return {"recorded": False}
+    per_fold = folds.groupby(["model", "type", "split", "fold"], as_index=False)[
+        ["mae", "rmse", "r2", "mape", "accuracy_pct"]].mean()
+    bounds = folds.groupby("fold").agg(train_end=("train_end", "first")).reset_index()
+    labels = load_original_frame()["billing_period"].tolist()
+    test_n = folds[folds["split"] == "test"].groupby("fold")["n"].first()
+    fold_info = [{"fold": int(r.fold), "train_bills": int(r.train_end),
+                  "test_from": labels[int(r.train_end)] if int(r.train_end) < len(labels) else None,
+                  "test_to": labels[min(len(labels), int(r.train_end) + int(test_n[r.fold])) - 1],
+                  "test_bills": int(test_n[r.fold])} for r in bounds.itertuples()]
+    return {"recorded": True, "n_folds": int(folds["fold"].nunique()),
+            "method": ("Time-series k-fold cross-validation (expanding window). Fold k trains on all bills before "
+                       "its test block and is tested on the next block; data is never shuffled, so the model never "
+                       "learns from bills that come after the ones it is tested on."),
+            "folds": fold_info, "summary": summary.to_dict("records"), "per_fold": per_fold.to_dict("records"),
+            "accuracy": acc.to_dict("records") if acc is not None else [],
+            "accuracy_definition": "Accuracy % = 100 - MAPE (mean absolute percentage error)."}
+
+
 def training_view() -> dict:
     run = resolve_run_dir()
     model, scaler, meta, _ = get_bundle()
@@ -396,11 +442,14 @@ def training_view() -> dict:
     orig = load_original_frame()
     in_sample = run_prediction(orig, 1, True)["backtest"]
     ev = meta.get("evaluation", {})
+    loss = _loss_history(run, meta["variant"])
+    cv = cross_validation_view(run)
+    resid = _read(run, "residual_diagnostics.csv")
     return py({
         "run_id": run.name,
-        "loss_history": {"recorded": False, "message": (
-            "Per-epoch training and validation loss were not saved by the original training script, so no loss "
-            "curves can be drawn. Nothing has been estimated or re-trained to fill the gap.")},
+        "loss_history": loss,
+        "cross_validation": cv,
+        "residual_diagnostics": resid.to_dict("records") if resid is not None else [],
         "training": {
             "deployed_variant": meta["variant"], "training_periods": int(len(orig)),
             "training_windows": int(len(orig) - meta["sequence_length"]),
@@ -413,11 +462,15 @@ def training_view() -> dict:
         },
         "validation": {
             "method": "Early stopping on the most recent training windows (20%, minimum 2), then refit on all windows.",
-            "loss_recorded": False,
+            "loss_recorded": loss["recorded"],
             "tuning_trials": trials.to_dict("records") if trials is not None else [],
-            "tuning_note": "Optuna objective per trial (validation loss on scaled values) is the only validation score saved.",
-            "cross_validation": f"Walk-forward over the last {cfg.get('test_periods', 8)} bills "
-                                f"({cfg.get('runs', 1)} seed(s)); no k-fold cross-validation was performed.",
+            "tuning_note": (f"Optuna objective per trial: mean validation loss (scaled MSE) over "
+                            f"{cfg.get('cv_folds', 2)}-fold time-series cross-validation."),
+            "cross_validation": (f"{cv['n_folds']}-fold time-series cross-validation (expanding window, not shuffled), "
+                                 f"plus walk-forward over the last {cfg.get('test_periods', 8)} bills "
+                                 f"({cfg.get('runs', 1)} seed(s))." if cv["recorded"] else
+                                 f"Walk-forward over the last {cfg.get('test_periods', 8)} bills "
+                                 f"({cfg.get('runs', 1)} seed(s)); no k-fold cross-validation was recorded for this run."),
         },
         "testing": {"protocol": ev.get("protocol"), "n_test_points": int(len(walk_forward(run))),
                     "models": catalog()["models"], "horizon_metrics": horizon_table()},
@@ -476,14 +529,41 @@ def validation_panel() -> dict:
             f"R2 = {dep['r2']:.3f}. " + ("Negative R2 means worse than predicting the test-period mean."
                                           if dep["r2"] < 0 else ""))
         add("Mean percentage error", "passed" if (dep["mape"] or 100) < 5 else "warning",
-            f"MAPE = {dep['mape']:.2f}% on {dep['n_test_points']} test bills.")
+            f"MAPE = {dep['mape']:.2f}% (accuracy {dep['accuracy']:.2f}%) on {dep['n_test_points']} test bills.")
         add("Test sample size", "passed" if dep["n_test_points"] >= 30 else "warning",
             f"{dep['n_test_points']} walk-forward test bills; results are exploratory (the project README says the same).")
         resid = (wf["actual"] - wf[dep["key"]]).abs() / wf["actual"] * 100
         add("Largest single-bill error", "passed" if resid.max() < 10 else "warning",
             f"Worst bill {wf['billing_period'].iloc[int(resid.idxmax())]}: {resid.max():.1f}% off.")
-    add("Training/validation loss history", "not_evaluated",
-        "Not saved by the original training script; no curves are shown.")
+    loss = _loss_history(run, meta["variant"])
+    if loss["recorded"]:
+        add("Training/validation loss history", "passed",
+            f"Saved per epoch; early stopping kept the weights from epoch {loss['best_epoch']}.")
+    else:
+        add("Training/validation loss history", "not_evaluated",
+            "Not saved by the training script for this run; no curves are shown.")
+    cv = cross_validation_view(run)
+    if cv["recorded"]:
+        acc = {r["model"]: r for r in cv["accuracy"]}.get(meta["variant"])
+        test = next((r for r in cv["summary"] if r["model"] == meta["variant"] and r["split"] == "test"), None)
+        if test:
+            add(f"{cv['n_folds']}-fold cross-validation stability",
+                "passed" if test["accuracy_pct_std"] < 5 else "warning",
+                f"Test accuracy {test['accuracy_pct_mean']:.2f}% ± {test['accuracy_pct_std']:.2f} across "
+                f"{cv['n_folds']} folds (RMSE {test['rmse_mean']:,.0f} ± {test['rmse_std']:,.0f}).")
+        if acc:
+            gap = acc["train_test_gap"]
+            add("Overfitting check (train vs test accuracy)", "passed" if acc["fit_check"] == "ok" else "warning",
+                f"Train {acc['train_accuracy']:.2f}% vs CV test {acc['cv_test_accuracy']:.2f}% "
+                f"(gap {gap:+.2f} points; flagged above 5).")
+    else:
+        add("k-fold cross-validation", "not_evaluated", "No cross-validation results were saved for this run.")
+    resid = _read(run, "residual_diagnostics.csv")
+    if resid is not None and meta["variant"] in set(resid["model"]):
+        r = resid.set_index("model").loc[meta["variant"]]
+        add("Residual bias", "passed" if r["bias_check"] == "ok" else "warning",
+            f"Mean residual {r['mean_residual']:,.0f} {config.UNIT_LABEL} (t = {r['bias_t']:.2f}; |t| > 2 means "
+            f"systematic over- or under-prediction); {r['share_under_predicted'] * 100:.0f}% of test bills under-predicted.")
     add("Data-leakage protocol", "not_evaluated",
         "The training code documents causal preprocessing and walk-forward testing and ships pytest tests for it "
         "(tests/test_evaluation.py). The dashboard does not re-verify this.")

@@ -95,13 +95,13 @@
                 <dt>Trained</dt><dd>{{ runDate(runDetail()!.run.id) }}</dd>
                 <dt>Model</dt><dd>{{ modelName(runDetail()!.run) }}</dd>
                 <dt>Window</dt><dd>{{ runDetail()!.run.sequence_length }} {{ billing() ? 'bills' : 'days' }}</dd>
-                <dt>Latest data</dt><dd>{{ runDetail()!.run.last_label }} · {{ fmt(runDetail()!.run.last_value, billing() ? 0 : 1) }} {{ billing() ? 'QTY' : 'm³' }}</dd>
+                <dt>Latest data</dt><dd>{{ runDetail()!.run.last_label }} · {{ fmt(runDetail()!.run.last_value, billing() ? 0 : 1) }} {{ billing() ? 'Units' : 'm³' }}</dd>
                 @if (bestNeural(); as b) {
                   <dt>Walk-forward MAE</dt><dd>{{ fmt(b['mae'], billing() ? 0 : 1) }}</dd>
                   <dt>Relative MAE</dt><dd>{{ b['rel_mae'] }} <span class="muted">(&lt; 1 beats “repeat last value”)</span></dd>
                 }
               </dl>
-              <p class="muted small">Runs offline on saved weights. Kharghar QTY units are unconfirmed — treat long-range forecasts as exploratory.</p>
+              <p class="muted small">Runs offline on saved weights. The physical unit behind Kharghar Units is unconfirmed — treat long-range forecasts as exploratory.</p>
             </div>
           }
         </div>

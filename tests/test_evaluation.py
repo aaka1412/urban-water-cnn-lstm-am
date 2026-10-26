@@ -3,12 +3,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from water_forecast import evaluation
 from water_forecast.baselines import naive_forecasts
 from water_forecast.data import causal_savgol, regularize_daily, train_clip_limits
-from water_forecast.evaluation import Fold, fit_on_prefix, identity_preprocess, summarize, walk_forward
+from water_forecast.evaluation import (Fold, accuracy_table, cv_folds, cv_summary, fit_on_prefix, identity_preprocess,
+                                       residual_diagnostics, summarize, time_series_cv, walk_forward)
+from water_forecast.reporting import metrics
 from water_forecast.training import ModelParams
 
 
@@ -50,9 +53,9 @@ def test_fold_training_never_sees_test_targets(monkeypatch):
     seen = {}
     real_fit = evaluation.fit_with_validation
 
-    def spy(variant, x, y, params, epochs, seed):
+    def spy(variant, x, y, params, epochs, seed, **kwargs):
         seen["windows"], seen["max_input"] = len(y), float(x.max())
-        return real_fit(variant, x, y, params, epochs, seed)
+        return real_fit(variant, x, y, params, epochs, seed, **kwargs)
 
     monkeypatch.setattr(evaluation, "fit_with_validation", spy)
     _, scaler, _, _ = fit_on_prefix("lstm", ModelParams(hidden_size=8), raw, train_end, seq_len,
@@ -87,3 +90,61 @@ def test_walk_forward_scores_neural_models_and_baselines_on_the_same_points():
     report = summarize(predictions, mase_scale=1.0)
     assert set(report["type"]) == {"neural", "baseline"}
     assert report.loc[report["model"] == "naive_last_value", "rel_mae"].iloc[0] == 1.0
+
+
+def test_accuracy_is_100_minus_mape():
+    result = metrics(np.array([100.0, 200.0]), np.array([110.0, 180.0]))
+    assert result["mape"] == pytest.approx(10.0)
+    assert result["accuracy_pct"] == pytest.approx(90.0)
+    assert metrics(np.array([10.0]), np.array([100.0]))["accuracy_pct"] == 0.0  # floored, never negative
+
+
+def test_cv_folds_are_chronological_contiguous_and_never_shuffled():
+    folds = cv_folds(32, 6, 5)
+    assert len(folds) == 5
+    assert folds[-1][1] == 32  # the last fold tests the most recent bills
+    for (train_end, test_end), (next_train_end, _) in zip(folds, folds[1:]):
+        assert train_end < test_end == next_train_end  # test blocks follow each other with no gap or overlap
+    assert folds[0][0] - 6 >= 10  # first fold keeps at least 10 training windows
+
+
+def test_cv_fold_training_never_sees_its_test_block(monkeypatch):
+    seq_len = 4
+    raw = np.linspace(10, 20, 30)
+    seen = []
+    real_fit = evaluation.fit_on_prefix
+
+    def spy(variant, params, values, train_end, *args, **kwargs):
+        seen.append(train_end)
+        return real_fit(variant, params, values, train_end, *args, **kwargs)
+
+    monkeypatch.setattr(evaluation, "fit_on_prefix", spy)
+    scores, curves = time_series_cv(raw, seq_len, {"lstm": ModelParams(hidden_size=8)}, identity_preprocess,
+                                    epochs=2, seed=0, n_splits=3)
+    test = scores[scores["split"] == "test"]
+    assert seen == [train_end for train_end, _ in cv_folds(len(raw), seq_len, 3)]
+    assert set(test["train_end"]) == set(seen)
+    assert set(scores["split"]) == {"train", "validation", "test"}
+    assert {"epoch", "train_loss", "val_loss"} <= set(curves.columns) and curves["val_loss"].notna().all()
+
+
+def test_accuracy_table_flags_overfitting_and_skips_baselines():
+    summary = cv_summary(pd.DataFrame([
+        {"model": "m", "type": "neural", "run": 0, "fold": 1, "split": s, "mae": 1, "rmse": 1, "r2": 0, "mape": 100 - a,
+         "accuracy_pct": a} for s, a in (("train", 99.0), ("validation", 92.0), ("test", 90.0))] + [
+        {"model": "naive_last_value", "type": "baseline", "run": 0, "fold": 1, "split": "test", "mae": 1, "rmse": 1,
+         "r2": 0, "mape": 5, "accuracy_pct": 95.0}]))
+    table = accuracy_table(summary, pd.DataFrame({"model": ["m"], "accuracy_pct": [91.0]})).set_index("model")
+    assert table.loc["m", "train_test_gap"] == pytest.approx(9.0)
+    assert table.loc["m", "fit_check"] == "possible overfitting"
+    assert table.loc["m", "walk_forward_test_accuracy"] == 91.0
+    assert table.loc["naive_last_value", "fit_check"].startswith("n/a")
+
+
+def test_residual_diagnostics_detect_systematic_bias():
+    rows = [{"model": "biased", "type": "neural", "run": 0, "origin": i, "horizon": 1, "target_index": i,
+             "actual": 100.0 + i, "forecast": 90.0 + i + (i % 2)} for i in range(10)]
+    diag = residual_diagnostics(pd.DataFrame(rows)).set_index("model")
+    assert diag.loc["biased", "mean_residual"] == pytest.approx(9.5)
+    assert diag.loc["biased", "bias_check"] == "biased"
+    assert diag.loc["biased", "share_under_predicted"] == 1.0

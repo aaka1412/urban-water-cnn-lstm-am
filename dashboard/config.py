@@ -12,8 +12,8 @@ MAX_UPLOAD_ROWS = int(os.getenv("WATER_MAX_UPLOAD_ROWS", "5000"))
 TOKEN_HOURS = float(os.getenv("WATER_TOKEN_HOURS", "8"))
 ALLOWED_EXTENSIONS = {".csv", ".xlsx"}
 REQUIRED_COLUMNS = ["period_start", "period_end", "billing_period", "total_qty"]
-UNIT_LABEL = "QTY"  # the project itself marks this unit as unconfirmed
-UNIT_NOTE = "QTY unit not confirmed in the source data"
+UNIT_LABEL = "Units"  # the project itself marks this unit as unconfirmed
+UNIT_NOTE = "physical unit (litre or m³) not confirmed in the source data"
 
 
 def data_store() -> Path:

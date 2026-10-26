@@ -31,11 +31,12 @@ def set_seed(seed: int) -> None:
 
 def train_model(variant: str, x_train: np.ndarray, y_train: np.ndarray, x_valid: np.ndarray | None,
                 y_valid: np.ndarray | None, params: ModelParams, epochs: int, seed: int,
-                patience: int = 15) -> tuple[Forecaster, float, int]:
+                patience: int = 15, history: list[dict] | None = None) -> tuple[Forecaster, float, int]:
     """Train one forecaster; returns (model, best validation loss, epoch count of the kept weights).
 
     With a validation set, training stops early and keeps the best-validation weights. The validation
     windows must never be test windows. Pass x_valid=None to train for exactly `epochs` epochs.
+    If `history` is a list, one {"epoch", "train_loss", "val_loss"} row (scaled MSE) is appended per epoch.
     """
     set_seed(seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -49,17 +50,24 @@ def train_model(variant: str, x_train: np.ndarray, y_train: np.ndarray, x_valid:
         valid_x, valid_y = torch.from_numpy(x_valid).to(device), torch.from_numpy(y_valid).to(device)
     for epoch in range(1, epochs + 1):
         model.train()
+        epoch_loss = 0.0
         for batch_x, batch_y in loader:
             optimizer.zero_grad()
             loss = criterion(model(batch_x.to(device)), batch_y.to(device))
             loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
+            epoch_loss += loss.item() * len(batch_x)
+        train_loss = epoch_loss / len(x_train)
         if not validate:
+            if history is not None:
+                history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": float("nan")})
             continue
         model.eval()
         with torch.no_grad():
             valid_loss = criterion(model(valid_x), valid_y).item()
+        if history is not None:
+            history.append({"epoch": epoch, "train_loss": train_loss, "val_loss": valid_loss})
         if valid_loss < best_loss - 1e-7:
             best_loss, best_epoch, stalled = valid_loss, epoch, 0
             best_state = {key: value.detach().cpu().clone() for key, value in model.state_dict().items()}
@@ -74,17 +82,24 @@ def train_model(variant: str, x_train: np.ndarray, y_train: np.ndarray, x_valid:
 
 
 def fit_with_validation(variant: str, x: np.ndarray, y: np.ndarray, params: ModelParams, epochs: int, seed: int,
-                        val_fraction: float = 0.2, min_val: int = 2) -> tuple[Forecaster, int]:
+                        val_fraction: float = 0.2, min_val: int = 2,
+                        diagnostics: dict | None = None) -> tuple[Forecaster, int]:
     """Pick the epoch count on the most recent training windows, then refit on all of them.
 
     x/y must contain only pre-test windows in time order. The last `val_fraction` of them act as the
     early-stopping validation set, so the test period never influences which weights are kept.
+    If `diagnostics` is a dict it receives the early-stopping run's per-epoch `history` and its scaled
+    predictions on the validation windows (`val_pred`, `n_val`).
     """
     n_val = max(min_val, int(round(len(x) * val_fraction)))
     if len(x) - n_val < 2:
         raise ValueError(f"Need more training windows for early stopping: got {len(x)}, validation uses {n_val}.")
-    _, _, best_epoch = train_model(variant, x[:-n_val], y[:-n_val], x[-n_val:], y[-n_val:], params, epochs, seed)
+    history = [] if diagnostics is not None else None
+    stopper, _, best_epoch = train_model(variant, x[:-n_val], y[:-n_val], x[-n_val:], y[-n_val:], params, epochs,
+                                         seed, history=history)
     model, _, _ = train_model(variant, x, y, None, None, params, best_epoch, seed)
+    if diagnostics is not None:
+        diagnostics.update(history=history, val_pred=predict(stopper, x[-n_val:]), n_val=n_val)
     return model, best_epoch
 
 

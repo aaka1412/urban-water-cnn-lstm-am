@@ -97,7 +97,6 @@ export class Overview implements OnInit {
   imports: [StatusChip],
   template: `
   <div class="d-pagehead"><h2>Upload Dataset</h2></div>
-  <p class="d-muted">Required columns: <code>period_start, period_end, billing_period, total_qty</code> — one row per two-month billing period, at least 6 consecutive periods. Files are validated only; nothing is retrained and no value is changed or filled in. Accepted: .csv, .xlsx (max 5 MB).</p>
   <section class="d-panel">
     <div class="d-drop" (dragover)="$event.preventDefault()" (drop)="drop($event)">
       <input #fi type="file" accept=".csv,.xlsx" (change)="pick($any($event.target).files)" hidden>

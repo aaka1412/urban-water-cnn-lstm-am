@@ -1,14 +1,23 @@
 """Train and fairly evaluate the CNN/LSTM model family on Kharghar billing-period totals.
 
-One model step is one two-month billing period. This script forecasts billing-period total QTY;
+One model step is one two-month billing period. This script forecasts billing-period total consumption (in Units);
 it does not make daily forecasts.
 
 Evaluation protocol (see src/water_forecast/evaluation.py):
   * walk-forward testing over the last --test-periods bills: for each bill, train only on earlier bills
     and forecast it (plus up to --horizon bills ahead, to check multi-step forecasts);
   * early stopping uses the last training windows, never the test bill;
-  * all four neural variants get the same --trials tuning budget on data before the first test bill;
+  * all four neural variants get the same --trials tuning budget on data before the first test bill,
+    each trial scored by time-series --cv-folds cross-validation;
   * naive baselines (last value, same bill last year) are scored on the same bills.
+
+Additional model validation (saved next to the walk-forward results):
+  * time-series k-fold CV (default 5 folds, expanding window, never shuffled) with train, validation
+    and test scores per fold: cv_folds.csv, cv_summary.csv, cv_folds.png;
+  * train vs validation vs test accuracy (accuracy % = 100 - MAPE) with an overfitting check:
+    train_test_accuracy.csv, train_test_accuracy.png;
+  * per-epoch training/validation loss: learning_curves.csv, learning_curves.png;
+  * residual analysis of the walk-forward forecasts: residual_diagnostics.csv, residuals.png.
 
 Usage:
   python run_kharghar_experiment.py --fast
@@ -27,15 +36,18 @@ from pathlib import Path
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MaxNLocator
 import numpy as np
 import pandas as pd
 import torch
 
 sys.path.insert(0, str(Path(__file__).parent / "src"))
-from water_forecast.evaluation import (Fold, fit_on_prefix, horizon_table, identity_preprocess, mean_forecasts,
-                                       naive_scale, summarize, tune_all, verdict, walk_forward)
+from water_forecast.evaluation import (Fold, accuracy_table, cv_summary, fit_on_prefix, horizon_table,
+                                       identity_preprocess, mean_forecasts, naive_scale, residual_diagnostics,
+                                       summarize, time_series_cv, tune_all, verdict, walk_forward)
 from water_forecast.inference import save_bundle
-from water_forecast.reporting import save_comparison_bars
+from water_forecast.reporting import metrics, save_comparison_bars
+from water_forecast.training import predict
 
 
 def parse_args() -> argparse.Namespace:
@@ -47,6 +59,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--runs", type=int, default=3, help="Random seeds per model and test bill.")
     parser.add_argument("--test-periods", type=int, default=8, help="Last N bills used as walk-forward test points.")
     parser.add_argument("--horizon", type=int, default=3, help="Also score forecasts up to this many bills ahead.")
+    parser.add_argument("--cv-folds", type=int, default=5, help="Time-series cross-validation folds.")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--fast", action="store_true", help="Short workflow check; not a final model run.")
     return parser.parse_args()
@@ -90,7 +103,7 @@ def save_period_plots(labels: list[str], wide: pd.DataFrame, report: pd.DataFram
         style = {"linestyle": "--", "color": "#7f7f7f"} if name == best_baseline else {}
         axis.plot(positions, wide[name], marker="o", label=name.replace("_", " "), alpha=0.85, **style)
     axis.set(title="Kharghar walk-forward test: actual vs forecast (each bill predicted from earlier bills only)",
-             ylabel="Total QTY (source unit not confirmed)", xlabel="Billing period")
+             ylabel="Total Units (source unit not confirmed)", xlabel="Billing period")
     axis.set_xticks(positions, labels, rotation=45, ha="right")
     axis.legend(ncol=2)
     fig.tight_layout()
@@ -101,22 +114,92 @@ def save_period_plots(labels: list[str], wide: pd.DataFrame, report: pd.DataFram
     axis.scatter(wide["actual"], wide[highlight], alpha=0.7)
     limits = [min(wide["actual"].min(), wide[highlight].min()), max(wide["actual"].max(), wide[highlight].max())]
     axis.plot(limits, limits, "r--")
-    axis.set(xlabel="Actual total QTY", ylabel=f"{highlight} forecast QTY", title="Walk-forward prediction comparison")
+    axis.set(xlabel="Actual total (Units)", ylabel=f"{highlight} forecast (Units)", title="Walk-forward prediction comparison")
     fig.tight_layout()
     fig.savefig(output / "scatter.png", dpi=180)
     plt.close(fig)
 
-    save_comparison_bars(report, output, "QTY")
+    save_comparison_bars(report, output, "Units")
 
     fig, axis = plt.subplots(figsize=(8, 4.5))
     for (model, kind), group in horizons.groupby(["model", "type"]):
         style = {"linestyle": "--", "alpha": 0.7} if kind == "baseline" else {"marker": "o"}
         axis.plot(group["horizon"], group["mae"], label=model, **style)
-    axis.set(title="Error by forecast horizon (1 = next bill)", xlabel="Bills ahead", ylabel="MAE (QTY)")
+    axis.set(title="Error by forecast horizon (1 = next bill)", xlabel="Bills ahead", ylabel="MAE (Units)")
     axis.set_xticks(sorted(horizons["horizon"].unique()))
     axis.legend(fontsize=8, ncol=2)
     fig.tight_layout()
     fig.savefig(output / "horizon_comparison.png", dpi=180)
+    plt.close(fig)
+
+
+def save_validation_plots(fold_scores: pd.DataFrame, accuracy: pd.DataFrame, curves: pd.DataFrame,
+                          wide: pd.DataFrame, labels: list[str], deployed: str, output: Path) -> None:
+    """CV per-fold test accuracy, train/validation/test accuracy, learning curves and residuals."""
+    plt.style.use("seaborn-v0_8-whitegrid")
+    test = fold_scores[fold_scores["split"] == "test"].groupby(["model", "fold"])["accuracy_pct"].mean().unstack(0)
+    fig, axis = plt.subplots(figsize=(10, 4.8))
+    test.plot(kind="bar", ax=axis, width=0.8)
+    axis.set(title="Time-series cross-validation: test accuracy per fold (accuracy = 100 - MAPE)",
+             xlabel="Fold (each tests the next block of bills after its training data)", ylabel="Test accuracy (%)")
+    axis.set_ylim(max(0.0, float(np.nanmin(test.to_numpy())) - 5), 100)
+    axis.tick_params(axis="x", rotation=0)
+    axis.legend(fontsize=8, ncol=3)
+    fig.tight_layout()
+    fig.savefig(output / "cv_folds.png", dpi=180)
+    plt.close(fig)
+
+    neural = accuracy[accuracy["type"] == "neural"]
+    splits = [("train_accuracy", "Train", "#1f77b4"), ("validation_accuracy", "Validation", "#ff7f0e"),
+              ("cv_test_accuracy", "CV test", "#2ca02c"), ("walk_forward_test_accuracy", "Walk-forward test", "#7f7f7f")]
+    positions, width = np.arange(len(neural)), 0.2
+    fig, axis = plt.subplots(figsize=(10, 4.8))
+    for i, (column, name, color) in enumerate(splits):
+        bars = axis.bar(positions + (i - 1.5) * width, neural[column], width, label=name, color=color)
+        axis.bar_label(bars, labels=[f"{v:.1f}" for v in neural[column]], fontsize=7, padding=2)
+    axis.set_xticks(positions, neural["model"])
+    low = float(np.nanmin(neural[[c for c, _, _ in splits]].to_numpy()))
+    axis.set(title="Training vs validation vs testing accuracy (accuracy = 100 - MAPE)", ylabel="Accuracy (%)",
+             ylim=(max(0.0, low - 5), 100 + 0.25 * (100 - max(0.0, low - 5))))
+    axis.set_yticks([tick for tick in axis.get_yticks() if tick <= 100])  # headroom above 100 is for the legend
+    axis.legend(fontsize=8, ncol=4, loc="upper center", frameon=True)
+    fig.tight_layout()
+    fig.savefig(output / "train_test_accuracy.png", dpi=180)
+    plt.close(fig)
+
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5))
+    final = curves[curves["fold"] == "final"]
+    axes[0].plot(final["epoch"], final["train_loss"], label="Training loss")
+    axes[0].plot(final["epoch"], final["val_loss"], label="Validation loss")
+    best = final.loc[final["val_loss"].idxmin()]
+    axes[0].axvline(best["epoch"], color="grey", linestyle=":", label=f"Best epoch ({int(best['epoch'])})")
+    axes[0].set(title=f"Deployed model ({deployed}) learning curve", xlabel="Epoch", ylabel="MSE (scaled)")
+    axes[0].legend(fontsize=8)
+    folds = curves[(curves["model"] == deployed) & (curves["fold"] != "final")]
+    for fold, group in folds.groupby("fold"):
+        epochs = group.groupby("epoch")[["train_loss", "val_loss"]].mean()
+        line, = axes[1].plot(epochs.index, epochs["val_loss"], label=f"Fold {fold} validation")
+        axes[1].plot(epochs.index, epochs["train_loss"], color=line.get_color(), linestyle="--", alpha=0.5)
+    axes[1].set(title="CV folds (solid = validation, dashed = training)", xlabel="Epoch", ylabel="MSE (scaled)")
+    axes[1].legend(fontsize=8)
+    for axis in axes:
+        axis.xaxis.set_major_locator(MaxNLocator(integer=True))
+    fig.tight_layout()
+    fig.savefig(output / "learning_curves.png", dpi=180)
+    plt.close(fig)
+
+    residuals = (wide["actual"] - wide[deployed]).to_numpy(float)
+    fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), gridspec_kw={"width_ratios": [2, 1]})
+    axes[0].bar(labels, residuals, color=["#1f77b4" if r >= 0 else "#d62728" for r in residuals])
+    axes[0].axhline(0, color="black", linewidth=0.8)
+    axes[0].set(title=f"Residuals of {deployed} on walk-forward test bills (actual - forecast)",
+                xlabel="Billing period", ylabel="Residual (Units)")
+    axes[0].tick_params(axis="x", rotation=45)
+    axes[1].hist(residuals, bins=min(8, len(residuals)), color="#1f77b4", edgecolor="white")
+    axes[1].axvline(0, color="black", linewidth=0.8)
+    axes[1].set(title="Residual distribution", xlabel="Residual (Units)", ylabel="Bills")
+    fig.tight_layout()
+    fig.savefig(output / "residuals.png", dpi=180)
     plt.close(fig)
 
 
@@ -135,6 +218,8 @@ def main() -> None:
         args.epochs, args.trials, args.runs, args.test_periods, args.horizon = 3, 1, 1, 3, 2
     if min(args.sequence_length, args.epochs, args.trials, args.runs, args.test_periods, args.horizon) < 1:
         raise ValueError("sequence length, epochs, trials, runs, test periods and horizon must be positive.")
+    if args.cv_folds < 2:
+        raise ValueError("--cv-folds must be at least 2.")
 
     frame = load_period_data(args.data, args.sequence_length)
     raw = frame["total_qty"].to_numpy(dtype=float)
@@ -151,9 +236,10 @@ def main() -> None:
     period_artifact["total_qty"] = period_artifact["total_qty"].astype(float)
     period_artifact.to_csv(output / "cleaned_period_totals.csv", index=False)
 
-    print(f"Tuning all 4 variants ({args.trials} trials each) on the {first_test} bills before the test period...")
+    print(f"Tuning all 4 variants ({args.trials} trials each, {args.cv_folds}-fold time-series CV) "
+          f"on the {first_test} bills before the test period...")
     tuned, history = tune_all(raw, first_test, args.sequence_length, identity_preprocess, args.trials,
-                              max(10, args.epochs // 3), args.seed)
+                              max(10, args.epochs // 3), args.seed, cv_folds=args.cv_folds)
     pd.DataFrame(history).to_csv(output / "trial_history.csv", index=False)
     (output / "best_hyperparameters.json").write_text(
         json.dumps({variant: asdict(params) for variant, params in tuned.items()}, indent=2))
@@ -175,10 +261,31 @@ def main() -> None:
     deployed = neural.iloc[0]["model"]  # deploy the neural variant with the lowest walk-forward error
     save_period_plots(list(wide["billing_period"]), wide, report, horizons, deployed, output)
 
+    print(f"\n{args.cv_folds}-fold time-series cross-validation ({args.runs} seed(s) per model)...")
+    fold_scores, curves = time_series_cv(raw, args.sequence_length, tuned, identity_preprocess, args.epochs,
+                                         args.seed, n_splits=args.cv_folds, runs=args.runs,
+                                         progress=lambda message: print("  " + message))
+    cv_table = cv_summary(fold_scores)
+    accuracy = accuracy_table(cv_table, report)
+    residuals = residual_diagnostics(predictions)
+    fold_scores.to_csv(output / "cv_folds.csv", index=False)
+    cv_table.to_csv(output / "cv_summary.csv", index=False)
+    accuracy.to_csv(output / "train_test_accuracy.csv", index=False)
+    residuals.to_csv(output / "residual_diagnostics.csv", index=False)
+
     # Final model for the chatbot: same leak-free fitting, now on every observed bill.
-    final_model, full_scaler, _, final_epochs = fit_on_prefix(
+    final_diag: dict = {}
+    final_model, full_scaler, full_inputs, final_epochs = fit_on_prefix(
         deployed, tuned[deployed], raw, len(raw), args.sequence_length, identity_preprocess, args.epochs,
-        args.seed + 10_000)
+        args.seed + 10_000, diagnostics=final_diag)
+    curves = pd.concat([curves, pd.DataFrame(final_diag["history"]).assign(model=deployed, run=0, fold="final")],
+                       ignore_index=True)
+    curves.to_csv(output / "learning_curves.csv", index=False)
+    final_x = np.stack([full_inputs[end - args.sequence_length:end]
+                        for end in range(args.sequence_length, len(raw))])[..., None].astype(np.float32)
+    final_fit = full_scaler.inverse_transform(predict(final_model, final_x).reshape(-1, 1)).ravel()
+    final_train = metrics(raw[args.sequence_length:], final_fit)
+    save_validation_plots(fold_scores, accuracy, curves, wide, list(wide["billing_period"]), deployed, output)
     model_frame = pd.DataFrame({"supply_m3": raw})
     predicted_qty = forecast_next_period(final_model, full_scaler, model_frame["supply_m3"], args.sequence_length)
     last_start = frame["period_start"].iloc[-1]
@@ -199,7 +306,7 @@ def main() -> None:
     deployed_row = neural.iloc[0]
     bundle.update({
         "data_frequency": "two_month_billing_period",
-        "target_units": "QTY unit not confirmed",
+        "target_units": "Units (physical unit not confirmed)",
         "evaluation": {
             "protocol": f"walk-forward over last {args.test_periods} bills, {args.runs} seed(s), "
                         "early stopping on training windows, equal tuning for all variants",
@@ -209,6 +316,10 @@ def main() -> None:
             "best_baseline": best_baseline["model"],
             "best_baseline_mae": best_baseline["mae"],
             "final_training_epochs": final_epochs,
+            "final_train_accuracy_pct": final_train["accuracy_pct"],
+            "cv_folds": args.cv_folds,
+            "cv_protocol": f"{args.cv_folds}-fold time-series cross-validation (expanding window, not shuffled)",
+            "deployed_cv_test_accuracy_pct": float(accuracy.set_index("model").loc[deployed, "cv_test_accuracy"]),
         },
     })
     bundle_path.write_text(json.dumps(bundle, indent=2))
@@ -216,11 +327,12 @@ def main() -> None:
     config["data"] = str(args.data)
     config["frequency"] = "two_month_billing_period"
     config["target_column"] = "total_qty"
-    config["target_units"] = "QTY unit not confirmed"
+    config["target_units"] = "Units (physical unit not confirmed)"
     (output / "config.json").write_text(json.dumps(config, indent=2, default=str))
 
-    columns = ["model", "type", "runs", "n_forecasts", "mae", "rmse", "r2", "rel_mae", "mase", "mae_run_std"]
-    print("\nWalk-forward results, next bill (QTY units; source unit not confirmed).")
+    columns = ["model", "type", "runs", "n_forecasts", "mae", "rmse", "r2", "accuracy_pct", "rel_mae", "mase",
+               "mae_run_std"]
+    print("\nWalk-forward results, next bill (in Units; physical unit not confirmed).")
     print("rel_mae < 1 = better than repeating the last bill on the same test bills; "
           "mae_run_std = spread across seeds.")
     print(report[columns].to_string(index=False, float_format=lambda value: f"{value:,.3f}"))
@@ -229,9 +341,21 @@ def main() -> None:
         print(horizons.pivot_table(index="model", columns="horizon", values="mae")
               .to_string(float_format=lambda value: f"{value:,.0f}"))
     print("\n" + verdict(report))
+
+    print(f"\n{args.cv_folds}-fold time-series cross-validation, mean ± std across folds "
+          "(accuracy = 100 - MAPE):")
+    for _, row in cv_table.iterrows():
+        print(f"  {row['model']:<20} {row['split']:<10} accuracy {row['accuracy_pct_mean']:6.2f}% "
+              f"± {row['accuracy_pct_std']:5.2f}   RMSE {row['rmse_mean']:>12,.0f} ± {row['rmse_std']:,.0f}")
+    print("\nTraining vs testing accuracy (%):")
+    print(accuracy.to_string(index=False, float_format=lambda value: f"{value:,.2f}"))
+    print(f"\nDeployed model trained on all bills: training accuracy {final_train['accuracy_pct']:.2f}% "
+          f"(R² {final_train['r2']:.3f}), early stopping chose {final_epochs} epochs.")
+    print("\nResidual analysis on walk-forward test bills (|bias_t| > 2 = systematic over/under-prediction):")
+    print(residuals.to_string(index=False, float_format=lambda value: f"{value:,.3f}"))
     print(f"\nDeployed for the chatbot: {deployed} (lowest walk-forward error among neural models), "
           f"retrained on all {len(raw)} bills.")
-    print(f"Next-period estimate: {predicted_qty:,.2f} QTY for {label}.")
+    print(f"Next-period estimate: {predicted_qty:,.2f} Units for {label}.")
     print(f"Artifacts saved to: {output.resolve()}")
 
 
